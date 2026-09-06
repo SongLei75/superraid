@@ -1,0 +1,9 @@
+build/
+src/fat/*.o
+src/fat/*.ko
+src/fat/*.mod
+src/fat/*.mod.c
+src/fat/.*.cmd
+src/fat/*.d
+src/fat/Module.symvers
+src/fat/modules.order

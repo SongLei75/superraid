@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <openssl/evp.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -138,12 +139,25 @@ static int read_dirty_settings(struct dirty_settings *settings)
 
 static int write_dirty_settings(const struct dirty_settings *settings)
 {
-    return write_sysctl_int("/proc/sys/vm/dirty_writeback_centisecs",
-                            settings->writeback_centisecs) != 0 ||
-           write_sysctl_int("/proc/sys/vm/dirty_background_ratio",
-                            settings->background_ratio) != 0 ||
-           write_sysctl_int("/proc/sys/vm/dirty_ratio",
-                            settings->dirty_ratio) != 0 ? -1 : 0;
+    int first_errno = 0;
+
+    if (write_sysctl_int("/proc/sys/vm/dirty_writeback_centisecs",
+                         settings->writeback_centisecs) != 0)
+        first_errno = errno != 0 ? errno : EIO;
+    if (write_sysctl_int("/proc/sys/vm/dirty_background_ratio",
+                         settings->background_ratio) != 0 &&
+        first_errno == 0)
+        first_errno = errno != 0 ? errno : EIO;
+    if (write_sysctl_int("/proc/sys/vm/dirty_ratio",
+                         settings->dirty_ratio) != 0 &&
+        first_errno == 0)
+        first_errno = errno != 0 ? errno : EIO;
+
+    if (first_errno != 0) {
+        errno = first_errno;
+        return -1;
+    }
+    return 0;
 }
 
 static int get_unit_active_state(sd_bus *bus, const char *unit,
@@ -541,17 +555,31 @@ static int mount_app_param(struct app_param_state *state,
     }
     candidates[0] = device_a;
     candidates[1] = device_b;
-    if (read_dirty_settings(&state->original) != 0 ||
-        enable_pagecache_delay() != 0) {
-        fprintf(stderr, "%s: cannot configure page-cache delay: %s\n",
+    if (read_dirty_settings(&state->original) != 0) {
+        fprintf(stderr, "%s: cannot read dirty settings: %s\n",
                 PROGRAM_NAME, strerror(errno));
+        free(device_a);
+        free(device_b);
+        return EXIT_IO_ERROR;
+    }
+    if (enable_pagecache_delay() != 0) {
+        int saved_errno = errno;
+
+        fprintf(stderr, "%s: cannot configure page-cache delay: %s\n",
+                PROGRAM_NAME, strerror(saved_errno));
+        if (write_dirty_settings(&state->original) != 0)
+            fprintf(stderr,
+                    "%s: cannot restore dirty settings after setup failure: %s\n",
+                    PROGRAM_NAME, strerror(errno));
+        free(device_a);
+        free(device_b);
+        errno = saved_errno;
         return EXIT_IO_ERROR;
     }
 
     if (mkdir(mountpoint, 0755) != 0 && errno != EEXIST) {
-        free(device_a);
-        free(device_b);
-        return EXIT_IO_ERROR;
+        result = EXIT_IO_ERROR;
+        goto fail_restore_dirty;
     }
 
     for (i = 0; i < sizeof(candidates) / sizeof(candidates[0]); ++i) {
@@ -573,23 +601,30 @@ static int mount_app_param(struct app_param_state *state,
         state->mounted_dev = strdup(candidates[i]);
         state->other_dev = strdup(i == 0 ? candidates[1] : candidates[0]);
         if (state->mounted_dev == NULL || state->other_dev == NULL) {
-            free(device_a);
-            free(device_b);
-            return EXIT_NOMEM;
+            result = EXIT_NOMEM;
+            goto fail_restore_dirty;
         }
         printf("%s is mounted, backup is %s\n",
                state->mounted_dev, state->other_dev);
         if (sd_notify(0, "READY=1\nSTATUS=app_param mounted") < 0) {
             fprintf(stderr, "%s: sd_notify READY failed\n", PROGRAM_NAME);
-            return EXIT_IO_ERROR;
+            result = EXIT_IO_ERROR;
+            goto fail_restore_dirty;
         }
         free(device_a);
         free(device_b);
         return EXIT_OK;
     }
+    result = EXIT_METADATA_INVALID;
+
+fail_restore_dirty:
+    if (write_dirty_settings(&state->original) != 0)
+        fprintf(stderr,
+                "%s: cannot restore dirty settings after mount failure: %s\n",
+                PROGRAM_NAME, strerror(errno));
     free(device_a);
     free(device_b);
-    return EXIT_METADATA_INVALID;
+    return result;
 }
 
 static int recover_app_param(struct app_param_state *state,
@@ -597,33 +632,64 @@ static int recover_app_param(struct app_param_state *state,
                              int chunk_kib)
 {
     uint8_t other_digest[SHA256_DIGEST_SIZE];
-    int other_result = verify_path_digest(state->other_dev, chunk_kib,
-                                          other_digest);
+    int result = EXIT_OK;
+    int other_result;
+
+    (void)mountpoint;
+    other_result = verify_path_digest(state->other_dev, chunk_kib,
+                                      other_digest);
 
     if (other_result != EXIT_OK ||
         memcmp(state->mounted_digest, other_digest,
                SHA256_DIGEST_SIZE) != 0) {
-        printf("start recover backup %s\n", state->other_dev);
-        if (powerctl_copy_block_device(state->mounted_dev,
-                           state->other_dev) != 0) {
+        char parent[PATH_MAX];
+        uint64_t source_offset;
+        uint64_t partition_size;
+
+        if (powerctl_resolve_partition_source(state->mounted_dev, parent,
+                                              sizeof(parent), &source_offset,
+                                              &partition_size) != 0) {
+            fprintf(stderr, "%s: cannot resolve recovery source %s: %s\n",
+                    PROGRAM_NAME, state->mounted_dev, strerror(errno));
+            result = EXIT_IO_ERROR;
+            goto out_restore;
+        }
+        printf("start recover backup %s from %s offset=%" PRIu64
+               " size=%" PRIu64 "\n",
+               state->other_dev, parent, source_offset, partition_size);
+        if (powerctl_copy_block_range(parent, source_offset, partition_size,
+                                      state->other_dev) != 0) {
             fprintf(stderr, "%s: cannot copy app_param backup: %s\n",
                     PROGRAM_NAME, strerror(errno));
-            return EXIT_IO_ERROR;
+            result = EXIT_IO_ERROR;
+            goto out_restore;
         }
-
-        printf("backup %s is recovered\n", state->other_dev);
-    }
-
-    if (write_dirty_settings(&state->original) != 0) {
-        fprintf(stderr, "%s: cannot restore dirty settings: %s\n",
-                PROGRAM_NAME, strerror(errno));
-        return EXIT_IO_ERROR;
+        other_result = verify_path_digest(state->other_dev, chunk_kib,
+                                          other_digest);
+        if (other_result != EXIT_OK ||
+            memcmp(state->mounted_digest, other_digest,
+                   SHA256_DIGEST_SIZE) != 0) {
+            fprintf(stderr, "%s: recovered peer verify failed: %s\n",
+                    PROGRAM_NAME, state->other_dev);
+            result = other_result == EXIT_OK ? EXIT_HASH_MISMATCH : other_result;
+            goto out_restore;
+        }
+        printf("backup %s is recovered and verified\n", state->other_dev);
     }
 
     if (release_app_services() != 0) {
-        return EXIT_IO_ERROR;
+        result = EXIT_IO_ERROR;
+        goto out_restore;
     }
-    return EXIT_OK;
+
+out_restore:
+    if (write_dirty_settings(&state->original) != 0) {
+        fprintf(stderr, "%s: cannot restore dirty settings: %s\n",
+                PROGRAM_NAME, strerror(errno));
+        if (result == EXIT_OK)
+            result = EXIT_IO_ERROR;
+    }
+    return result;
 }
 
 static int open_target(const char *path, bool writable, struct target *target)

@@ -1,0 +1,17 @@
+[Unit]
+Description=SuperRAID verify, mount and recover app_param (GCP test)
+DefaultDependencies=no
+Before=local-fs.target shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=notify
+ExecStartPre=/usr/sbin/modprobe nls_cp437
+ExecStartPre=/usr/sbin/modprobe nls_iso8859-1
+ExecStart=/usr/local/bin/fsctl mount /dev/mmcblk0p26:/dev/mmcblk0p27 /app_param
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=sysinit.target

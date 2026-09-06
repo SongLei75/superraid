@@ -3,12 +3,15 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <unistd.h>
 #include <linux/fs.h>
 
@@ -36,6 +39,7 @@ static const uint8_t descriptor_magic[8] = {
 struct target {
     int fd;
     uint64_t size;
+    unsigned int logical_size;
 };
 
 static uint32_t get_le32(const uint8_t *p)
@@ -60,15 +64,18 @@ static void put_le64(uint8_t *p, uint64_t value)
     put_le32(p + 4, (uint32_t)(value >> 32));
 }
 
-static int open_target(const char *path, bool writable, struct target *target)
+static int open_target(const char *path, bool writable, bool exclusive,
+                       struct target *target)
 {
     struct stat st;
     unsigned long long bytes;
     int logical_size;
-    int flags = (writable ? O_RDWR : O_RDONLY) | O_CLOEXEC | O_DIRECT;
+    int flags = (writable ? O_RDWR : O_RDONLY) | O_CLOEXEC | O_DIRECT |
+                (exclusive ? O_EXCL : 0);
 
     target->fd = -1;
     target->size = 0;
+    target->logical_size = 0;
     if (stat(path, &st) != 0 || !S_ISBLK(st.st_mode)) {
         errno = ENOTBLK;
         return -1;
@@ -87,6 +94,7 @@ static int open_target(const char *path, bool writable, struct target *target)
         return -1;
     }
     target->size = (uint64_t)bytes;
+    target->logical_size = (unsigned int)logical_size;
     return 0;
 }
 
@@ -96,6 +104,46 @@ static void close_target(struct target *target)
         close(target->fd);
         target->fd = -1;
     }
+}
+
+int powerctl_resolve_active_peer(const char *mountpoint,
+                                 const char *device_a,
+                                 const char *device_b,
+                                 const char **active,
+                                 const char **peer)
+{
+    struct stat mount_stat;
+    struct stat a_stat;
+    struct stat b_stat;
+
+    if (mountpoint == NULL || device_a == NULL || device_b == NULL ||
+        active == NULL || peer == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (stat(mountpoint, &mount_stat) != 0 ||
+        stat(device_a, &a_stat) != 0 ||
+        stat(device_b, &b_stat) != 0)
+        return -1;
+    if (!S_ISBLK(a_stat.st_mode) || !S_ISBLK(b_stat.st_mode) ||
+        a_stat.st_rdev == b_stat.st_rdev) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if (mount_stat.st_dev == a_stat.st_rdev) {
+        *active = device_a;
+        *peer = device_b;
+        return 0;
+    }
+    if (mount_stat.st_dev == b_stat.st_rdev) {
+        *active = device_b;
+        *peer = device_a;
+        return 0;
+    }
+
+    errno = ENODEV;
+    return -1;
 }
 
 static int write_footer(int fd, uint64_t protected_size,
@@ -159,7 +207,7 @@ int powerctl_seal_block_device(const char *path, int chunk_kib,
     uint64_t protected_size;
     int result = -1;
 
-    if (open_target(path, true, &target) != 0)
+    if (open_target(path, true, false, &target) != 0)
         return -1;
     protected_size = target.size - FOOTER_AREA_SIZE;
     if (hash_sha256_fd(target.fd, protected_size, computed_digest,
@@ -176,35 +224,137 @@ int powerctl_seal_block_device(const char *path, int chunk_kib,
     return result;
 }
 
-int powerctl_copy_block_device(const char *source, const char *destination)
+int powerctl_resolve_partition_source(const char *partition,
+                                      char *parent, size_t parent_size,
+                                      uint64_t *source_offset,
+                                      uint64_t *partition_size)
+{
+    struct stat st;
+    char sys_path[PATH_MAX];
+    char resolved[PATH_MAX];
+    char start_path[PATH_MAX];
+    char *slash;
+    char *parent_name;
+    unsigned long long start_sector;
+    unsigned long long bytes;
+    FILE *file;
+    int fd;
+
+    if (partition == NULL || parent == NULL || parent_size == 0 ||
+        source_offset == NULL || partition_size == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (stat(partition, &st) != 0 || !S_ISBLK(st.st_mode)) {
+        errno = ENOTBLK;
+        return -1;
+    }
+    if (snprintf(sys_path, sizeof(sys_path), "/sys/dev/block/%u:%u",
+                 major(st.st_rdev), minor(st.st_rdev)) >= (int)sizeof(sys_path) ||
+        realpath(sys_path, resolved) == NULL)
+        return -1;
+
+    slash = strrchr(resolved, '/');
+    if (slash == NULL || slash == resolved) {
+        errno = EINVAL;
+        return -1;
+    }
+    *slash = '\0';
+    parent_name = strrchr(resolved, '/');
+    if (parent_name == NULL || parent_name[1] == '\0') {
+        errno = EINVAL;
+        return -1;
+    }
+    ++parent_name;
+    if (snprintf(parent, parent_size, "/dev/%s", parent_name) >=
+        (int)parent_size) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    if (snprintf(start_path, sizeof(start_path), "%s/start", sys_path) >=
+        (int)sizeof(start_path)) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    file = fopen(start_path, "r");
+    if (file == NULL)
+        return -1;
+    if (fscanf(file, "%llu", &start_sector) != 1) {
+        fclose(file);
+        errno = EINVAL;
+        return -1;
+    }
+    fclose(file);
+
+    fd = open(partition, O_RDONLY | O_CLOEXEC);
+    if (fd < 0)
+        return -1;
+    if (ioctl(fd, BLKGETSIZE64, &bytes) != 0) {
+        int saved_errno = errno;
+        close(fd);
+        errno = saved_errno;
+        return -1;
+    }
+    close(fd);
+
+    if (start_sector > UINT64_MAX / 512ULL) {
+        errno = EOVERFLOW;
+        return -1;
+    }
+    *source_offset = (uint64_t)start_sector * 512ULL;
+    *partition_size = (uint64_t)bytes;
+    return 0;
+}
+
+int powerctl_copy_block_range(const char *source, uint64_t source_offset,
+                              uint64_t length, const char *destination)
 {
     struct target source_target;
     struct target destination_target;
     void *buffer = NULL;
     const size_t buffer_size = 1024U * 1024U;
     uint64_t offset = 0;
+    size_t alignment;
     int result = -1;
 
-    if (open_target(source, false, &source_target) != 0)
+    if (source == NULL || destination == NULL ||
+        strcmp(source, destination) == 0 || length == 0) {
+        errno = EINVAL;
         return -1;
-    if (open_target(destination, true, &destination_target) != 0)
+    }
+    if (open_target(source, false, false, &source_target) != 0)
+        return -1;
+    if (open_target(destination, true, true, &destination_target) != 0)
         goto out_source;
-    if (posix_memalign(&buffer, 4096U, buffer_size) != 0) {
+    if (destination_target.size != length ||
+        source_offset > source_target.size ||
+        length > source_target.size - source_offset ||
+        source_offset % source_target.logical_size != 0 ||
+        length % source_target.logical_size != 0 ||
+        length % destination_target.logical_size != 0) {
+        errno = EINVAL;
+        goto out;
+    }
+    alignment = source_target.logical_size > destination_target.logical_size ?
+                source_target.logical_size : destination_target.logical_size;
+    if (alignment < 4096U)
+        alignment = 4096U;
+    if (posix_memalign(&buffer, alignment, buffer_size) != 0) {
         errno = ENOMEM;
         goto out;
     }
-    while (offset < source_target.size) {
+    while (offset < length) {
         size_t count = buffer_size;
         ssize_t read_count;
         ssize_t written;
 
-        if (source_target.size - offset < count)
-            count = (size_t)(source_target.size - offset);
-        read_count = pread(source_target.fd, buffer, count, (off_t)offset);
+        if (length - offset < count)
+            count = (size_t)(length - offset);
+        read_count = pread(source_target.fd, buffer, count,
+                           (off_t)(source_offset + offset));
         if (read_count != (ssize_t)count)
             goto out;
-        written = pwrite(destination_target.fd, buffer, count,
-                         (off_t)offset);
+        written = pwrite(destination_target.fd, buffer, count, (off_t)offset);
         if (written != (ssize_t)count)
             goto out;
         offset += count;
@@ -216,4 +366,16 @@ out:
 out_source:
     close_target(&source_target);
     return result;
+}
+
+int powerctl_copy_block_device(const char *source, const char *destination)
+{
+    struct target source_target;
+    uint64_t source_size;
+
+    if (open_target(source, false, false, &source_target) != 0)
+        return -1;
+    source_size = source_target.size;
+    close_target(&source_target);
+    return powerctl_copy_block_range(source, 0, source_size, destination);
 }

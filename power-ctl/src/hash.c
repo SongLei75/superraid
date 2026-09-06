@@ -19,7 +19,6 @@
 #include <time.h>
 #include <unistd.h>
 
-#include <arm_acle.h>
 
 #include "hash.h"
 
@@ -48,31 +47,15 @@ static double now_sec(void)
 
 static uint32_t crc32c_update(uint32_t crc, const uint8_t *data, size_t len)
 {
-    const uint8_t *p = data;
+    const uint32_t polynomial = 0x82f63b78U;
 
-    while (len >= 8) {
-        uint64_t value;
-        memcpy(&value, p, sizeof(value));
-        crc = __crc32cd(crc, value);
-        p += 8;
-        len -= 8;
+    while (len-- != 0U) {
+        unsigned int bit;
+
+        crc ^= *data++;
+        for (bit = 0; bit < 8U; ++bit)
+            crc = (crc >> 1) ^ ((crc & 1U) ? polynomial : 0U);
     }
-    if (len >= 4) {
-        uint32_t value;
-        memcpy(&value, p, sizeof(value));
-        crc = __crc32cw(crc, value);
-        p += 4;
-        len -= 4;
-    }
-    if (len >= 2) {
-        uint16_t value;
-        memcpy(&value, p, sizeof(value));
-        crc = __crc32ch(crc, value);
-        p += 2;
-        len -= 2;
-    }
-    if (len != 0)
-        crc = __crc32cb(crc, *p);
     return crc;
 }
 

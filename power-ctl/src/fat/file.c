@@ -203,7 +203,7 @@ static int fat_ioctl_get_volume_id(struct inode *inode, u32 __user *user_attr)
 	return put_user(sbi->vol_id, user_attr);
 }
 
-static int fat_ioctl_fitrim(struct inode *inode, unsigned long arg)
+static int __fat_ioctl_fitrim(struct inode *inode, unsigned long arg)
 {
 	struct super_block *sb = inode->i_sb;
 	struct fstrim_range __user *user_range;
@@ -231,6 +231,17 @@ static int fat_ioctl_fitrim(struct inode *inode, unsigned long arg)
 		return -EFAULT;
 
 	return 0;
+}
+
+static int fat_ioctl_fitrim(struct inode *inode, unsigned long arg)
+{
+	int err = fat_begin_write(inode->i_sb);
+
+	if (err)
+		return err;
+	err = __fat_ioctl_fitrim(inode, arg);
+	fat_end_write(inode->i_sb);
+	return err;
 }
 
 long fat_generic_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
