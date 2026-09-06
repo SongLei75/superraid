@@ -1,0 +1,514 @@
+diff --git a/build/j6/rootfs-configs/base_manifest b/build/j6/rootfs-configs/base_manifest
+index 8f6b340583623ddaf877635121bb63dcb9cdc5a7..120ee860955bb4d719f6c08f795ca2e670bdc193 100644
+--- a/build/j6/rootfs-configs/base_manifest
++++ b/build/j6/rootfs-configs/base_manifest
+@@ -135,6 +135,12 @@
+ /usr/lib/modules/{{KERNEL_VERSION}}/modules.builtin
+ /usr/lib/modules/{{KERNEL_VERSION}}/kernel
+ /usr/lib/modules/{{KERNEL_VERSION}}/kernel/fs
++/usr/lib/modules/{{KERNEL_VERSION}}/kernel/fs/fat
++/usr/lib/modules/{{KERNEL_VERSION}}/kernel/fs/fat/fat.ko
++/usr/lib/modules/{{KERNEL_VERSION}}/kernel/fs/fat/vfat.ko
++/usr/lib/modules/{{KERNEL_VERSION}}/kernel/fs/nls
++/usr/lib/modules/{{KERNEL_VERSION}}/kernel/fs/nls/nls_cp437.ko
++/usr/lib/modules/{{KERNEL_VERSION}}/kernel/fs/nls/nls_iso8859-1.ko
+ /usr/lib/modules/{{KERNEL_VERSION}}/kernel/fs/configfs
+ /usr/lib/modules/{{KERNEL_VERSION}}/kernel/fs/configfs/configfs.ko
+ /usr/lib/modules/{{KERNEL_VERSION}}/kernel/drivers
+@@ -520,6 +526,11 @@ libbpf.so.1.1.2 -> /usr/lib/aarch64-linux-gnu/libbpf.so.1
+ /usr/sbin/fsck.ext4
+ /usr/sbin/mke2fs
+ /usr/sbin/mke2fs -> /usr/sbin/mkfs.ext4
++/usr/sbin/fatlabel
++/usr/sbin/fsck.fat
++/usr/sbin/fsck.fat -> /usr/sbin/fsck.vfat
++/usr/sbin/mkfs.fat
++/usr/sbin/mkfs.fat -> /usr/sbin/mkfs.vfat
+ /sbin
+ /lib
+ /etc/default
+diff --git a/build/j6/rootfs-configs/j6m_normal_manifest b/build/j6/rootfs-configs/j6m_normal_manifest
+index 2573f01796a40b82b5e7de8954e794b5453f05f3..dd0bed7c0782c5c936f6e972b19d39506694ebd5 100644
+--- a/build/j6/rootfs-configs/j6m_normal_manifest
++++ b/build/j6/rootfs-configs/j6m_normal_manifest
+@@ -35,6 +35,7 @@
+ /usr/hobot/etc/J6_pcie/ctrl0_chip_0.json
+ /usr/hobot/etc/J6_pcie/ctrl1_chip_1.json
+ /usr/hobot/etc/nodes.json
++/usr/hobot/lib/libcachemydata.so
+ /usr/hobot/lib/libmali.so
+ /usr/hobot/lib/libmali.so.0
+ /usr/hobot/lib/libmali.so.0.50.0
+@@ -362,6 +363,8 @@
+ /usr/bin/partition_scan_tool
+ /usr/bin/e2tools
+ /usr/bin/e2batch
++/usr/bin/fsctl
++/usr/bin/app_param_test
+ /usr/lib/aarch64-linux-gnu/libpartition_verify.so
+ /usr/lib/udev/rules.d/60-serial.rules
+ /usr/lib/udev/rules.d/60-infiniband.rules
+@@ -656,8 +659,7 @@
+ /usr/lib/systemd/system/systemd-backlight@.service
+ /usr/lib/systemd/system/em.service
+ /usr/lib/systemd/system/video_functions.service
+-/usr/lib/systemd/system/app_param.mount
+-/usr/lib/systemd/system/app_param_bak.mount
++/usr/lib/systemd/system/app_param-mount.service
+ /usr/lib/systemd/system/map.mount
+ /usr/lib/systemd/system/backhaul.mount
+ /usr/lib/systemd/system/format-on-fail@.service
+@@ -764,7 +766,6 @@
+ /usr/lib/systemd/system/network.target
+ /usr/lib/systemd/system/systemd-journald@.socket
+ /usr/lib/systemd/system/machine.slice
+-/usr/lib/systemd/system/load_app_param.service
+ /usr/lib/systemd/systemd-growfs
+ /usr/lib/systemd/systemd-boot-check-no-failures
+ /usr/lib/systemd/system-sleep
+@@ -1053,7 +1054,6 @@
+ /usr/sbin/nft
+ /usr/share/dbus-1/system-services/org.carizon.Perfetto.service
+ /app
+-/app_param_bak
+ /home/carizon/.ssh/authorized_keys
+ /root
+ /root/.ssh/authorized_keys
+@@ -1113,7 +1113,6 @@
+ /etc/systemd/system/reboot.target.wants/hobot-reboot.service
+ /etc/systemd/system/shutdown.target.wants/hobot-reboot.service
+ /etc/systemd/system/sshd.service
+-/etc/systemd/system/sysinit.target.wants/load_app_param.service
+ /etc/systemd/system/sockets.target.wants/carizon-perfetto.socket
+ /etc/systemd/system/sysinit.target.wants/hobot-loadko.service
+ /etc/systemd/system/networkd-interface-ready.target.wants/sensor_center.service
+@@ -1124,8 +1123,7 @@
+ /etc/systemd/system/sysinit.target.wants/verify_partition@basesystem.service
+ /etc/systemd/system/sysinit.target.wants/verify_partition@system.service
+ {% endif %}
+-/etc/systemd/system/sysinit.target.wants/app_param.mount
+-/etc/systemd/system/sysinit.target.wants/app_param_bak.mount
++/etc/systemd/system/sysinit.target.wants/app_param-mount.service
+ /etc/systemd/system/sysinit.target.wants/map.mount
+ /etc/systemd/system/sysinit.target.wants/backhaul.mount
+ /etc/systemd/system/sysstat.service.wants/sysstat-collect.timer
+@@ -1148,7 +1146,6 @@
+ /etc/systemd/system/systemd-veritysetup@middleware.service.d/override-mode.conf
+ /etc/systemd/system/systemd-veritysetup@system.service.d/override-mode.conf
+ /etc/systemd/system/systemd-veritysetup@basesystem.service.d/override-mode.conf
+-/etc/systemd/system/systemd-makefs@dev-disk-by\x2dlabel-app_param.service.d/override.conf
+ /etc/systemd/sleep.conf
+ /etc/ssl/certs
+ /etc/ssl/certs/ca-certificates.crt
+diff --git a/build/j6/rootfs-configs/j6p_normal_manifest b/build/j6/rootfs-configs/j6p_normal_manifest
+index 22d94a7816246d9e039191ddcb0696f3c1736827..ed20e68523e665b27ea36a7ffac46ab01ef53efc 100644
+--- a/build/j6/rootfs-configs/j6p_normal_manifest
++++ b/build/j6/rootfs-configs/j6p_normal_manifest
+@@ -387,6 +387,7 @@
+ /usr/bin/verity-start-wrapper.sh
+ /usr/bin/e2tools
+ /usr/bin/e2batch
++/usr/bin/fsctl
+ /usr/lib/udev/rules.d/60-serial.rules
+ /usr/lib/udev/rules.d/60-infiniband.rules
+ /usr/lib/udev/rules.d/70-joystick.rules
+@@ -685,8 +686,7 @@
+ /usr/lib/systemd/system/systemd-backlight@.service
+ /usr/lib/systemd/system/em.service
+ /usr/lib/systemd/system/video_functions.service
+-/usr/lib/systemd/system/app_param.mount
+-/usr/lib/systemd/system/app_param_bak.mount
++/usr/lib/systemd/system/app_param-mount.service
+ /usr/lib/systemd/system/map.mount
+ /usr/lib/systemd/system/backhaul.mount
+ /usr/lib/systemd/system/format-on-fail@.service
+@@ -791,7 +791,6 @@
+ /usr/lib/systemd/system/systemd-journald@.socket
+ /usr/lib/systemd/system/machine.slice
+ /usr/lib/systemd/system/load-app.service
+-/usr/lib/systemd/system/load_app_param.service
+ /usr/lib/systemd/systemd-growfs
+ /usr/lib/systemd/systemd-boot-check-no-failures
+ /usr/lib/systemd/system-sleep
+@@ -1066,7 +1065,6 @@
+ /usr/sbin/ifconfig
+ /usr/share/dbus-1/system-services/org.carizon.Perfetto.service
+ /app
+-/app_param_bak
+ /home/carizon/.ssh/authorized_keys
+ /root
+ /root/.ssh/authorized_keys
+@@ -1132,7 +1130,6 @@
+ /etc/systemd/system/reboot.target.wants/hobot-reboot.service
+ /etc/systemd/system/shutdown.target.wants/hobot-reboot.service
+ /etc/systemd/system/sshd.service
+-/etc/systemd/system/sysinit.target.wants/load_app_param.service
+ /etc/systemd/system/sockets.target.wants/carizon-perfetto.socket
+ /etc/systemd/system/sysinit.target.wants/hobot-loadko.service
+ /etc/systemd/system/networkd-interface-ready.target.wants/sensor_center.service
+@@ -1143,8 +1140,7 @@
+ /etc/systemd/system/sysinit.target.wants/verify_partition@basesystem.service
+ /etc/systemd/system/sysinit.target.wants/verify_partition@system.service
+ {% endif %}
+-/etc/systemd/system/sysinit.target.wants/app_param.mount
+-/etc/systemd/system/sysinit.target.wants/app_param_bak.mount
++/etc/systemd/system/sysinit.target.wants/app_param-mount.service
+ /etc/systemd/system/sysinit.target.wants/map.mount
+ /etc/systemd/system/sysinit.target.wants/backhaul.mount
+ /etc/systemd/system/sysstat.service.wants/sysstat-collect.timer
+@@ -1168,7 +1164,6 @@
+ /etc/systemd/system/systemd-veritysetup@middleware.service.d/override-mode.conf
+ /etc/systemd/system/systemd-veritysetup@system.service.d/override-mode.conf
+ /etc/systemd/system/systemd-veritysetup@basesystem.service.d/override-mode.conf
+-/etc/systemd/system/systemd-makefs@dev-disk-by\x2dlabel-app_param.service.d/override.conf
+ /etc/ssl/certs
+ /etc/ssl/certs/ca-certificates.crt
+ /etc/sysctl.conf
+diff --git a/build/j6/rootfs-configs/rootfs_common_whitelist-j6m-250630.conf b/build/j6/rootfs-configs/rootfs_common_whitelist-j6m-250630.conf
+index 50877ef4cf527f6ff9c03d8cf43966cac1520239..48dd22880d6591d9849c72d5895896a90a9b0f47 100644
+--- a/build/j6/rootfs-configs/rootfs_common_whitelist-j6m-250630.conf
++++ b/build/j6/rootfs-configs/rootfs_common_whitelist-j6m-250630.conf
+@@ -4076,7 +4076,6 @@
+ /usr/lib/systemd/systemd-coredump
+ /usr/lib/systemd/systemd-growfs
+ /usr/lib/systemd/system
+-/usr/lib/systemd/system/app_param.mount
+ /usr/lib/systemd/system/auditd.service
+ /usr/lib/systemd/system/auth-rpcgss-module.service
+ /usr/lib/systemd/system/basic.target
+diff --git a/build/j6/rootfs-configs/rootfs_common_whitelist-j6p-260101.conf b/build/j6/rootfs-configs/rootfs_common_whitelist-j6p-260101.conf
+index ad9b95ce9b6e5e61d2be9beaa57db4ac05483e11..8e40850739bb00b2db462ffc5d47a402005b6807 100644
+--- a/build/j6/rootfs-configs/rootfs_common_whitelist-j6p-260101.conf
++++ b/build/j6/rootfs-configs/rootfs_common_whitelist-j6p-260101.conf
+@@ -2953,7 +2953,6 @@ usr/lib/systemd/system/backhaul.mount
+ /usr/lib/systemd/systemd-sysv-install
+ /usr/lib/systemd/system
+ /usr/lib/systemd/system/app.mount
+-/usr/lib/systemd/system/app_param.mount
+ /usr/lib/systemd/system/auth-rpcgss-module.service
+ /usr/lib/systemd/system/backhaul.mount
+ /usr/lib/systemd/system/basic.target
+diff --git a/build/j6/rootfs/etc/fstab b/build/j6/rootfs/etc/fstab
+index 5184bee4978874a906fe76bd1705bc3b5b7e3b48..171cffc2986a3ff9c136480c5e6b61cd3cb69c1b 100644
+--- a/build/j6/rootfs/etc/fstab
++++ b/build/j6/rootfs/etc/fstab
+@@ -1,12 +1,12 @@
+ 
+ tmpfs  /tmp  tmpfs  nodev,nosuid  0  0
+ 
+-LABEL=log  /log ext4 defaults,noatime,nosuid,nodev,discard,lazytime,x-systemd.makefs,x-systemd.after=/app_param 0  2
+-LABEL=ota  /ota ext4 defaults,noatime,nosuid,nodev,discard,lazytime,x-systemd.makefs,x-systemd.after=/app_param  0  2
++LABEL=log  /log ext4 defaults,noatime,nosuid,nodev,discard,lazytime,x-systemd.makefs,x-systemd.after=app_param-mount.service 0  2
++LABEL=ota  /ota ext4 defaults,noatime,nosuid,nodev,discard,lazytime,x-systemd.makefs,x-systemd.after=app_param-mount.service  0  2
+ /backhaul/coredump  /var/lib/systemd/coredump  none bind,nofail,x-systemd.requires=backhaul.mount,x-systemd.after=backhaul.mount 0 0
+ /dev/mapper/system  /system  ext4  ro,nofail,x-systemd.requires=systemd-veritysetup@system.service  0  0
+ /dev/mapper/basesystem  /basesystem  ext4  ro,nofail,x-systemd.requires=systemd-veritysetup@system.service  0  0
+ /dev/mapper/app  /app ext4  ro,nofail,x-systemd.requires=systemd-veritysetup@app.service  0  0
+ /dev/mapper/middleware  /middleware  ext4  ro,nofail,x-systemd.requires=systemd-veritysetup@middleware.service  0  0
+-LABEL=backhaul  /backhaul ext4 defaults,noatime,nosuid,nodev,discard,x-systemd.makefs,x-systemd.after=/app_param 0  2
++LABEL=backhaul  /backhaul ext4 defaults,noatime,nosuid,nodev,discard,x-systemd.makefs,x-systemd.after=app_param-mount.service 0  2
+ /log/systemd   /var/log/journal none bind,nofail 0 0
+diff --git a/build/j6/rootfs/etc/fstab-j6p b/build/j6/rootfs/etc/fstab-j6p
+index 6b1f302d9abe6b20cc7f9658fa180bdc475d2ec4..52076b6febab10be5fdcdc0cdd6b14ca0e903523 100644
+--- a/build/j6/rootfs/etc/fstab-j6p
++++ b/build/j6/rootfs/etc/fstab-j6p
+@@ -1,12 +1,12 @@
+ 
+ tmpfs  /tmp  tmpfs  nodev,nosuid  0  0
+ 
+-LABEL=log  /backhaul ext4 defaults,noatime,nosuid,nodev,discard,lazytime,x-systemd.makefs,x-systemd.after=/app_param 0  2
+-LABEL=ota  /ota ext4 defaults,noatime,nosuid,nodev,discard,lazytime,x-systemd.makefs,x-systemd.after=/app_param  0  2
++LABEL=log  /backhaul ext4 defaults,noatime,nosuid,nodev,discard,lazytime,x-systemd.makefs,x-systemd.after=app_param-mount.service 0  2
++LABEL=ota  /ota ext4 defaults,noatime,nosuid,nodev,discard,lazytime,x-systemd.makefs,x-systemd.after=app_param-mount.service  0  2
+ /backhaul/coredump  /var/lib/systemd/coredump  none bind,nofail,x-systemd.requires=backhaul.mount,x-systemd.after=backhaul.mount 0 0
+ /dev/mapper/system  /system  ext4  ro,nofail,x-systemd.requires=systemd-veritysetup@system.service  0  0
+ /dev/mapper/basesystem  /basesystem  ext4  ro,nofail,x-systemd.requires=systemd-veritysetup@system.service  0  0
+ /dev/mapper/app  /app ext4  ro,nofail,x-systemd.requires=systemd-veritysetup@app.service  0  0
+ /dev/mapper/middleware  /middleware  ext4  ro,nofail,x-systemd.requires=systemd-veritysetup@middleware.service  0  0
+-LABEL=backhaul  /log ext4 defaults,noatime,nosuid,nodev,discard,x-systemd.makefs,x-systemd.after=/app_param 0  2
++LABEL=backhaul  /log ext4 defaults,noatime,nosuid,nodev,discard,x-systemd.makefs,x-systemd.after=app_param-mount.service 0  2
+ /log/systemd   /var/log/journal none bind,nofail 0 0
+diff --git a/build/j6/rootfs/etc/systemd/journald.conf b/build/j6/rootfs/etc/systemd/journald.conf
+index 99ee22351c2fb67c8ae0abad192fdc8d47a6185d..c2a0ec62574572866db80fdf79597ba19fc3b983 100644
+--- a/build/j6/rootfs/etc/systemd/journald.conf
++++ b/build/j6/rootfs/etc/systemd/journald.conf
+@@ -37,7 +37,7 @@ ForwardToKMsg=no
+ ForwardToConsole=no
+ #ForwardToWall=yes
+ #TTYPath=/dev/console
+-MaxLevelStore=notice
++MaxLevelStore=debug
+ MaxLevelSyslog=notice
+ MaxLevelKMsg=notice
+ MaxLevelConsole=notice
+diff --git a/build/j6/rootfs/etc/systemd/system/sysinit.target.wants/app_param-mount.service b/build/j6/rootfs/etc/systemd/system/sysinit.target.wants/app_param-mount.service
+new file mode 120000
+index 0000000000000000000000000000000000000000..94b5c45a6c933ec9874116a6ceefe3933d6771e9
+--- /dev/null
++++ b/build/j6/rootfs/etc/systemd/system/sysinit.target.wants/app_param-mount.service
+@@ -0,0 +1 @@
++/usr/lib/systemd/system/app_param-mount.service
+\ No newline at end of file
+diff --git a/build/j6/rootfs/etc/systemd/system/sysinit.target.wants/app_param.mount b/build/j6/rootfs/etc/systemd/system/sysinit.target.wants/app_param.mount
+deleted file mode 120000
+index 36af73907ef35439ebd19d0b2ccc24561719d395..0000000000000000000000000000000000000000
+--- a/build/j6/rootfs/etc/systemd/system/sysinit.target.wants/app_param.mount
++++ /dev/null
+@@ -1 +0,0 @@
+-/lib/systemd/system/app_param.mount
+\ No newline at end of file
+diff --git a/build/j6/rootfs/etc/systemd/system/sysinit.target.wants/app_param_bak.mount b/build/j6/rootfs/etc/systemd/system/sysinit.target.wants/app_param_bak.mount
+deleted file mode 120000
+index fee850e19774eda1f266179148bdf537757e3c7e..0000000000000000000000000000000000000000
+--- a/build/j6/rootfs/etc/systemd/system/sysinit.target.wants/app_param_bak.mount
++++ /dev/null
+@@ -1 +0,0 @@
+-/lib/systemd/system/app_param_bak.mount
+\ No newline at end of file
+diff --git a/build/j6/rootfs/etc/systemd/system/sysinit.target.wants/load_app_param.service b/build/j6/rootfs/etc/systemd/system/sysinit.target.wants/load_app_param.service
+deleted file mode 120000
+index 78419446b52891b14cba5e964e7593ac0e9182e1..0000000000000000000000000000000000000000
+--- a/build/j6/rootfs/etc/systemd/system/sysinit.target.wants/load_app_param.service
++++ /dev/null
+@@ -1 +0,0 @@
+-/lib/systemd/system/load_app_param.service
+\ No newline at end of file
+diff --git "a/build/j6/rootfs/etc/systemd/system/systemd-makefs@dev-disk-by\\x2dlabel-app_param.service.d/override.conf" "b/build/j6/rootfs/etc/systemd/system/systemd-makefs@dev-disk-by\\x2dlabel-app_param.service.d/override.conf"
+deleted file mode 100644
+index 9f7d9ef09d24c29547cf3412859435deead1f763..0000000000000000000000000000000000000000
+--- "a/build/j6/rootfs/etc/systemd/system/systemd-makefs@dev-disk-by\\x2dlabel-app_param.service.d/override.conf"
++++ /dev/null
+@@ -1,3 +0,0 @@
+-[Unit]
+-After=load_app_param.service sensor_center.service video_functions.service
+-Requires=load_app_param.service
+diff --git a/build/j6/rootfs/usr/lib/systemd/system/app_param-mount.service b/build/j6/rootfs/usr/lib/systemd/system/app_param-mount.service
+new file mode 100644
+index 0000000000000000000000000000000000000000..4c1143074328d1d4e1983c709da834c7f6d44a98
+--- /dev/null
++++ b/build/j6/rootfs/usr/lib/systemd/system/app_param-mount.service
+@@ -0,0 +1,18 @@
++[Unit]
++Description=Verify and mount app_param
++DefaultDependencies=no
++Before=local-fs.target shutdown.target
++Conflicts=shutdown.target
++
++[Service]
++Type=notify
++ExecStartPre=/usr/bin/modprobe vfat
++ExecStartPre=/usr/bin/modprobe nls_cp437
++ExecStartPre=/usr/bin/modprobe nls_iso8859-1
++ExecStart=/usr/bin/fsctl mount /dev/mmcblk0p26:/dev/mmcblk0p27 /app_param
++RemainAfterExit=yes
++StandardOutput=journal
++StandardError=journal
++
++[Install]
++WantedBy=sysinit.target
+diff --git a/build/j6/rootfs/usr/lib/systemd/system/app_param.mount b/build/j6/rootfs/usr/lib/systemd/system/app_param.mount
+deleted file mode 100644
+index 482d15697a6e6251f9934dc4d84a03e0b3cee207..0000000000000000000000000000000000000000
+--- a/build/j6/rootfs/usr/lib/systemd/system/app_param.mount
++++ /dev/null
+@@ -1,16 +0,0 @@
+-[Unit]
+-Documentation=man:fstab(5)
+-SourcePath=/etc/fstab
+-Before=local-fs.target
+-Requires=systemd-fsck@dev-disk-by\x2dlabel-app_param.service
+-After=blockdev@dev-disk-by\x2dlabel-app_param.target systemd-fsck@dev-disk-by\x2dlabel-app_param.service
+-OnFailure=format-on-fail@app_param.service
+-
+-[Mount]
+-What=/dev/disk/by-label/app_param
+-Where=/app_param
+-Type=ext4
+-Options=defaults,noatime,nosuid,nodev,discard,x-systemd.makefs
+-
+-[Install]
+-WantedBy=sysinit.target
+\ No newline at end of file
+diff --git a/build/j6/rootfs/usr/lib/systemd/system/app_param_bak.mount b/build/j6/rootfs/usr/lib/systemd/system/app_param_bak.mount
+deleted file mode 100644
+index 4aa3d2208608fa00c283872f2875294a98cdfcea..0000000000000000000000000000000000000000
+--- a/build/j6/rootfs/usr/lib/systemd/system/app_param_bak.mount
++++ /dev/null
+@@ -1,19 +0,0 @@
+-
+-[Unit]
+-Documentation=man:fstab(5)
+-SourcePath=/etc/fstab
+-After=app_param.mount
+-Before=local-fs.target
+-Requires=systemd-fsck@dev-disk-by\x2dlabel-app_param_bak.service
+-After=blockdev@dev-disk-by\x2dlabel-app_param_bak.target systemd-fsck@dev-disk-by\x2dlabel-app_param_bak.service
+-OnFailure=format-on-fail@app_param_bak.service
+-
+-
+-[Mount]
+-What=/dev/disk/by-label/app_param_bak
+-Where=/app_param_bak
+-Type=ext4
+-Options=defaults,noatime,nosuid,nodev,discard,x-systemd.makefs,x-systemd.after=/app_param
+-
+-[Install]
+-WantedBy=sysinit.target
+\ No newline at end of file
+diff --git a/build/j6/rootfs/usr/lib/systemd/system/backhaul.mount b/build/j6/rootfs/usr/lib/systemd/system/backhaul.mount
+index 7dc308dd0694f844a258b720df56155a9771d1b2..4c483ea15612c8cdf5900b59b86c5596e1b180b9 100644
+--- a/build/j6/rootfs/usr/lib/systemd/system/backhaul.mount
++++ b/build/j6/rootfs/usr/lib/systemd/system/backhaul.mount
+@@ -1,7 +1,7 @@
+ [Unit]
+ Documentation=man:fstab(5)
+ SourcePath=/etc/fstab
+-After=app_param.mount
++After=app_param-mount.service
+ Before=local-fs.target
+ After=blockdev@dev-disk-by\x2dlabel-backhaul.target
+ OnFailure=format-on-fail@backhaul.service
+@@ -10,7 +10,7 @@ OnFailure=format-on-fail@backhaul.service
+ What=/dev/disk/by-label/backhaul
+ Where=/backhaul
+ Type=ext4
+-Options=defaults,noatime,nosuid,nodev,discard,x-systemd.makefs,x-systemd.after=/app_param
++Options=defaults,noatime,nosuid,nodev,discard,x-systemd.makefs,x-systemd.after=app_param-mount.service
+ 
+ [Install]
+ WantedBy=sysinit.target
+\ No newline at end of file
+diff --git a/build/j6/rootfs/usr/lib/systemd/system/carizon-pcie.service b/build/j6/rootfs/usr/lib/systemd/system/carizon-pcie.service
+index 4e557f258f4d7b6877fcb20a539c802bf45b4dab..1c136fac59adea94ada1f191060e8d0c25d461ff 100644
+--- a/build/j6/rootfs/usr/lib/systemd/system/carizon-pcie.service
++++ b/build/j6/rootfs/usr/lib/systemd/system/carizon-pcie.service
+@@ -1,7 +1,7 @@
+ [Unit]
+ Description=PCIe driver service
+ DefaultDependencies=no
+-After=app_param_bak.mount system.mount
++After=app_param-mount.service system.mount
+ Before=shutdown.target reboot.target halt.target
+ Conflicts=shutdown.target
+ StartLimitBurst=3
+diff --git a/build/j6/rootfs/usr/lib/systemd/system/load_app_param.service b/build/j6/rootfs/usr/lib/systemd/system/load_app_param.service
+deleted file mode 100644
+index b71285d3774a1491d545e05117a67c836a3a039f..0000000000000000000000000000000000000000
+--- a/build/j6/rootfs/usr/lib/systemd/system/load_app_param.service
++++ /dev/null
+@@ -1,17 +0,0 @@
+-[Unit]
+-Description=Copy app param from block device before mount
+-DefaultDependencies=no
+-After=dev-disk-by\x2dlabel-app_param.device
+-Requires=dev-disk-by\x2dlabel-app_param.device
+-Before=app_param.mount
+-Conflicts=shutdown.target
+-
+-[Service]
+-Type=oneshot
+-ExecStart=-/usr/bin/e2batch /dev/disk/by-label/app_param /etc/carizon_app_param_manifest /app_param
+-RemainAfterExit=yes
+-StandardOutput=journal
+-StandardError=journal
+-
+-[Install]
+-WantedBy=sysinit.target
+diff --git a/build/j6/rootfs/usr/lib/systemd/system/map.mount b/build/j6/rootfs/usr/lib/systemd/system/map.mount
+index 1829d3bbd2eb202bd3ddc67f449fec93ee7e4c43..1230ba180bb5fc4a5aee512c56337cf0c8b98fe3 100644
+--- a/build/j6/rootfs/usr/lib/systemd/system/map.mount
++++ b/build/j6/rootfs/usr/lib/systemd/system/map.mount
+@@ -1,7 +1,7 @@
+ [Unit]
+ Documentation=man:fstab(5)
+ SourcePath=/etc/fstab
+-After=app_param.mount
++After=app_param-mount.service
+ Before=local-fs.target
+ After=blockdev@dev-disk-by\x2dlabel-map.target
+ OnFailure=format-on-fail@map.service
+@@ -10,7 +10,7 @@ OnFailure=format-on-fail@map.service
+ What=/dev/disk/by-label/map
+ Where=/map
+ Type=ext4
+-Options=defaults,noatime,nosuid,nodev,discard,x-systemd.makefs,x-systemd.after=/app_param
++Options=defaults,noatime,nosuid,nodev,discard,x-systemd.makefs,x-systemd.after=app_param-mount.service
+ 
+ [Install]
+ WantedBy=sysinit.target
+\ No newline at end of file
+diff --git a/build/j6/rootfs/usr/lib/systemd/system/sensor_center.service b/build/j6/rootfs/usr/lib/systemd/system/sensor_center.service
+index 8b05c103025c81b41668d812f0045216ce2f757e..b9069e714ebd82ec969f8e23ac3dbd19b92aaeab 100644
+--- a/build/j6/rootfs/usr/lib/systemd/system/sensor_center.service
++++ b/build/j6/rootfs/usr/lib/systemd/system/sensor_center.service
+@@ -2,8 +2,8 @@
+ Description=execution management service
+ DefaultDependencies=no
+ Before=shutdown.target systemd-veritysetup@system.service systemd-veritysetup@app.service systemd-veritysetup@basesystem.service systemd-veritysetup@middleware.service
+-After=hobot-loadko.service load_app_param.service env.service local_timesync.service
+-Requires=hobot-loadko.service load_app_param.service
++After=hobot-loadko.service app_param-mount.service env.service local_timesync.service
++Requires=hobot-loadko.service app_param-mount.service
+ Wants=env.service local_timesync.service
+ Conflicts=shutdown.target
+ ConditionKernelCommandLine=quickboot=yes
+@@ -12,7 +12,8 @@ ConditionKernelCommandLine=quickboot=yes
+ Type=simple
+ Environment="EM_SERV_SUPERVISION_INDEX=0"
+ Environment="LD_LIBRARY_PATH=/quickboot/lib:/quickboot/video_functions/lib:/quickboot/video_functions/lib/tros_lib/:/quickboot/video_functions/lib/3rdparty_lib/:/usr/lib:/system/usr/lib:/usr/hobot/lib:/usr/hobot/lib/sensor:/usr/lib/aarch64-linux-gnu:/system/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu:/system/lib/aarch64-linux-gnu:/app/lib:/app/pub/lib:/middleware/lib:/middleware/pub/lib:/usr/lib/gstreamer:/system/usr/lib/gstreamer"
+-ExecStart=/quickboot/sensors/bin/start_sensor.sh
++Environment="LD_PRELOAD=/usr/hobot/lib/libcachemydata.so"
++ExecStart=/usr/bin/app_param_test /app_param 1
+ Restart=no
+ TimeoutStartSec=infinity
+ StandardOutput=null
+diff --git a/build/j6/rootfs/usr/lib/systemd/system/video_functions.service b/build/j6/rootfs/usr/lib/systemd/system/video_functions.service
+index 69ed194084ba1b5f467ebabe8ebef9017607ce76..98808d607f997605688dcb2876a9d951c1c26d80 100644
+--- a/build/j6/rootfs/usr/lib/systemd/system/video_functions.service
++++ b/build/j6/rootfs/usr/lib/systemd/system/video_functions.service
+@@ -2,15 +2,16 @@
+ Description=execution management service
+ DefaultDependencies=no
+ Before=shutdown.target systemd-veritysetup@system.service systemd-veritysetup@app.service systemd-veritysetup@basesystem.service systemd-veritysetup@middleware.service
+-After=hobot-loadko.service load_app_param.service  env.service local_timesync.service
+-Requires=hobot-loadko.service load_app_param.service
++After=hobot-loadko.service app_param-mount.service  env.service local_timesync.service
++Requires=hobot-loadko.service app_param-mount.service
+ Wants=env.service local_timesync.service
+ Conflicts=shutdown.target
+ ConditionKernelCommandLine=quickboot=yes
+ 
+ [Service]
+-ExecStart=/quickboot/video_functions/bin/start_video_functions.sh
++ExecStart=/usr/bin/app_param_test /app_param
+ Environment="LD_LIBRARY_PATH=/quickboot/lib:/quickboot/video_functions/lib:/quickboot/video_functions/lib/tros_lib/:/quickboot/video_functions/lib/3rdparty_lib/:/usr/lib:/system/usr/lib:/usr/hobot/lib:/usr/hobot/lib/sensor:/usr/lib/aarch64-linux-gnu:/system/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu:/system/lib/aarch64-linux-gnu:/app/lib:/app/pub/lib:/middleware/lib:/middleware/pub/lib:/usr/lib/gstreamer:/system/usr/lib/gstreamer"
++Environment="LD_PRELOAD=/usr/hobot/lib/libcachemydata.so"
+ Restart=no
+ TimeoutStartSec=infinity
+ StandardOutput=null
+diff --git a/gpt/sub_config/app_param.json b/gpt/sub_config/app_param.json
+index 2cd5b88928d7896aa728f51d74ffb085587f3336..4d02f6de1a2900f2c328382b92a569a39e0b3ab1 100644
+--- a/gpt/sub_config/app_param.json
++++ b/gpt/sub_config/app_param.json
+@@ -19,7 +19,7 @@
+ 		"part_info": ["app_param", "app_param_bak"],
+ 		"size": "200m",
+ 		"cmds": [
+-			"$(PYTHON_EXTERNAL_DIR)/build_image  --partition app_param:b1 --dir_name ${TARGET_DEPLOY_DIR}/app_param --partition_size {{size}}"
++			"python3 $(SRC_BUILD_IMAGE_DIR)/build_image.py --partition app_param:b1 --fs_type vfat --dir_name ${TARGET_DEPLOY_DIR}/app_param --partition_size {{size}}"
+ 		]
+ 	}
+ }
+diff --git a/kernel/j6x/j6x_ngx_kernel_defconfig b/kernel/j6x/j6x_ngx_kernel_defconfig
+index 48b3056c1550705faf85df8e1acfb645e6f60f6d..d7e8d9418c5594672a1173d93d5466fb57a7b0eb 100644
+--- a/kernel/j6x/j6x_ngx_kernel_defconfig
++++ b/kernel/j6x/j6x_ngx_kernel_defconfig
+@@ -106,6 +106,8 @@ CONFIG_SUNRPC_GSS=m
+ CONFIG_SUNRPC_BACKCHANNEL=y
+ CONFIG_RPCSEC_GSS_KRB5=m
+ CONFIG_NLS=m
++CONFIG_NLS_CODEPAGE_437=m
++CONFIG_NLS_ISO8859_1=m
+ CONFIG_CRYPTO_ALGAPI=m
+ CONFIG_CRYPTO_ALGAPI2=m
+ CONFIG_CRYPTO_AEAD=m

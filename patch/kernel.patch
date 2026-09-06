@@ -1,0 +1,31 @@
+diff --git a/fs/Makefile b/fs/Makefile
+index 9b7bcf6e54cd4372ebee772ac4a319d811cb3bba..133052cf62432f1e4044ba9cc88404cbc5439a98 100644
+--- a/fs/Makefile
++++ b/fs/Makefile
+@@ -4,7 +4,7 @@
+ #
+ # 14 Sep 2000, Christoph Hellwig <hch@infradead.org>
+ # Rewritten to use lists instead of if-statements.
+-# 
++#
+ 
+ 
+ obj-y :=	open.o read_write.o file_table.o super.o \
+@@ -62,7 +62,7 @@ obj-$(CONFIG_CONFIGFS_FS)	+= configfs/
+ obj-y				+= devpts/
+ 
+ obj-$(CONFIG_DLM)		+= dlm/
+- 
++
+ # Do not add any filesystems before this line
+ obj-$(CONFIG_NETFS_SUPPORT)	+= netfs/
+ obj-$(CONFIG_FSCACHE)		+= fscache/
+@@ -79,7 +79,7 @@ obj-y				+= ramfs/
+ obj-$(CONFIG_HUGETLBFS)		+= hugetlbfs/
+ obj-$(CONFIG_CODA_FS)		+= coda/
+ obj-$(CONFIG_MINIX_FS)		+= minix/
+-obj-$(CONFIG_FAT_FS)		+= fat/
++obj-$(CONFIG_FAT_FS)		+= ../../hbre/power-ctl/src/fat/
+ obj-$(CONFIG_EXFAT_FS)		+= exfat/
+ obj-$(CONFIG_BFS_FS)		+= bfs/
+ obj-$(CONFIG_ISO9660_FS)	+= isofs/
