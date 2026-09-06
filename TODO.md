@@ -15,8 +15,8 @@ GCP 直接在测试机上把这两个路径映射到现有 1 GiB `app_param/app_
 
 - [x] **C1 Recovery writeback 的目标语义。**
   - 目标是通过 `vm.dirty_*` 把 Recovery 短窗口内 App 的 ordinary buffered file data 和 FAT metadata 尽量留在 cache 中。
-  - `dirty_writeback_centisecs=0 / dirty_background_ratio=50 / dirty_ratio=50` 是当前实测可工作的起始 profile，不是最终参数。
-  - 本轮先以该 profile 跑通；后续根据实测 dirty bytes、Recovery 时间和物理 hash 结果再决定是否调整。
+  - Linux 6.1.158 中 `dirty_writeback_centisecs=0` 虽关闭 periodic writeback，但 `wb_wakeup_delayed()` 会把首次 dirty inode 的 delayed work 以 0 jiffies 排队；GCP ftrace 已实际命中 `wb_workfn → generic_writepages → __block_write_full_page`。
+  - 当前测试 profile 改为 `dirty_writeback_centisecs=6000 / dirty_background_ratio=50 / dirty_ratio=50`，用 60 秒覆盖当前约 30 秒级 Recovery 窗口；后续仍按实际最长 Recovery 时间和 dirty bytes 留余量。
 
 - [x] **C2 peer Recovery 失败语义。**
   - peer read / write / verify 出错时 `fsctl` 返回失败，`app_param-mount.service` 进入错误状态并记录日志。
@@ -114,37 +114,37 @@ GCP 直接在测试机上把这两个路径映射到现有 1 GiB `app_param/app_
   - 已使用 gcc-12 编译，`fat.ko` / `vfat.ko` vermagic 均为 `6.1.158-rt58 SMP preempt_rt mod_unload modversions`。
 - [x] **T0.2 编译 `fsctl`、`hb_powerctl_demo`、`libcachemydata.so`、`app_param_test`、`app_param_test_loop`。**
   - 本地均已构建；`stage` 在完整 `make all` 时生成。
-- [ ] **T0.3 在 GCP 直接创建 `/dev/mmcblk0p26/27` 测试 alias，并部署本地已构建的 systemd unit、二进制和 ko。**
+- [x] **T0.3 在 GCP 直接创建 `/dev/mmcblk0p26/27` 测试 alias，并部署本地已构建的 systemd unit、二进制和 ko。**
   - alias 只属于 GCP 测试机环境，不进入本工程。
 
-- [ ] **T0.4 初始化 A/B 4 KiB VFINTEG footer，并保留可重复恢复的 known-good 镜像。**
+- [x] **T0.4 初始化 A/B 4 KiB VFINTEG footer，并保留可重复恢复的 known-good 镜像。**
 
 ### T1. footer / A-B 启动选择
 
 - [ ] **T1.1 seal → verify 正常通过；破坏 protected region 后 verify 失败。**
-- [ ] **T1.2 A valid / B valid → mount A。**
-- [ ] **T1.3 A valid / B invalid → mount A，恢复 B。**
+- [x] **T1.2 A valid / B valid → mount A。**
+- [x] **T1.3 A valid / B invalid → mount A，恢复 B。**
 - [ ] **T1.4 A invalid / B valid → mount B，恢复 A。**
 - [ ] **T1.5 A invalid / B invalid → mount service failed，App 不启动。**
 
 ### T2. Startup Recovery
 
-- [ ] **T2.1 A→B：parent source offset 全分区 copy，peer fsync + verify PASS。**
+- [x] **T2.1 A→B：parent source offset 全分区 copy，peer fsync + verify PASS。**
 - [ ] **T2.2 B→A：与 T2.1 对称。**
 - [ ] **T2.3 active 已挂载且 App 持续 ordinary buffered write 时做 Recovery；比较 Recovery 前后 active physical protected-region hash，确认 Recovery source read 没有主动把修改刷入 active。**
 - [ ] **T2.4 Recovery read/write/verify 失败注入：`fsctl`/service 报错并恢复临时 dirty profile。**
 
 ### T3. cachemydata
 
-- [ ] **T3.1 gate ON：ordinary buffered write 正常，`fsync/fdatasync/sync/syncfs/msync/sync_file_range` 和 `O_DIRECT/O_SYNC/O_DSYNC` 入口被拦截。**
+- [x] **T3.1 gate ON：ordinary buffered write 正常，`fsync/fdatasync/sync/syncfs/msync/sync_file_range` 和 `O_DIRECT/O_SYNC/O_DSYNC` 入口被拦截。**
 - [ ] **T3.2 SIGUSR2 release 后重复基本接口，恢复真实 libc 行为。**
 - [ ] **T3.3 [暂缓] 后续修复 C3 后验证 constructor-ready → release 时序。**
 - [ ] **T3.4 [暂缓] 后续处理 release 等待超时/查询失败语义。**
 
 ### T4. Recovery writeback profile
 
-- [ ] **T4.1 先以当前 `0 / 50 / 50` profile 重复 Recovery，记录 Recovery 最长时间、窗口内 dirty bytes 和 active physical hash。**
-- [ ] **T4.2 如果 T4.1 出现提前 writeback，再基于 Linux writeback 语义调整 sysctl profile并复测；若 T4.1 稳定则初版沿用当前 profile。**
+- [x] **T4.1 `6000 / 50 / 50` 完整 A→B Recovery 通过：临时 profile 持续约 45.6 秒，peer verify PASS；仅在恢复原 `500 / 10 / 20` 的边界触发正常 writeback，恢复后 App buffered 修改继续落盘。**
+- [x] **T4.2 已定位 `0` profile 的提前 writeback 根因：首次 dirty inode 经 `wb_wakeup_delayed()` 以 0 jiffies 立即排队；改为 6000 centisecs 后复测。**
 
 ### T5. FAT write gate
 
