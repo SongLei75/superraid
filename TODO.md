@@ -149,14 +149,14 @@ GCP 直接在测试机上把这两个路径映射到现有 1 GiB `app_param/app_
 ### T5. FAT write gate
 
 - [ ] **T5.1 ordinary write/create/unlink/rename 与 `FAT_IOCTL_DISABLE_WRITE` 并发：等待已有 writer，返回后新写入 `-EROFS`。**
-- [ ] **T5.2 App 保持运行时执行 disable-write；确认 App 进程不退出、读取仍可用、普通已覆盖写路径返回 `-EROFS`，同时持续 raw hash active 确认 protected region 不再变化。**
+- [x] **T5.2 App 保持运行时执行 disable-write：GCP 实测 App PID 保持 `active(running)`，读取持续成功，普通 write 返回 `-EROFS`；disable 返回后 6 秒及完整 seal/copy 期间 active protected region `block_rq_issue` 写请求均为 0，下一次 boot A/B verify 同 digest。**
 - [ ] **T5.3 [暂缓] open → unlink → disable-write → last close 的 eviction 边界测试。**
 - [ ] **T5.4 [暂缓] `FALLOC_FL_KEEP_SIZE` EOF blocks → disable-write → eviction 边界测试。**
 - [ ] **T5.5 FITRIM gate 回归：disable-write 前并发 FITRIM 会被 drain；disable-write 返回后新 FITRIM 返回 `-EROFS`。**
 
 ### T6. power path
 
-- [ ] **T6.1 active=A：`hb_powerctl_demo --prepare-only` 等到 SubState=exited 后执行 disable-write → seal A → A→B。**
+- [x] **T6.1 active=A：`hb_powerctl_demo --prepare-only` 在 SubState=exited 后执行 disable-write → seal A → A→B，peer 独立 verify PASS。**
 - [ ] **T6.2 active=B：`hb_powerctl_demo --prepare-only` 等到 SubState=exited 后执行 disable-write → seal B → B→A。**
 - [ ] **T6.3 Recovery 正在执行时启动 demo：确认 SubState=running 时等待，`fsctl mount` 完成进入 exited 后才开始 freeze/copy；App 保持运行。**
 - [ ] **T6.4 suspend 在正式工程仍直接走原 powerctl suspend 路径，不进入新增 prepare。**
@@ -164,7 +164,7 @@ GCP 直接在测试机上把这两个路径映射到现有 1 GiB `app_param/app_
 
 ### T7. 初版端到端
 
-- [ ] **T7.1 连续 reboot 多轮：boot verify → Recovery → App write → shutdown seal/copy → next boot verify。**
+- [ ] **T7.1 连续 reboot 多轮：boot verify → Recovery → App write → shutdown seal/copy → next boot verify。首轮 A→B 正常下电闭环已通过：next boot A/B 均 verify PASS、digest 相同、直接 mount A 且不触发 Recovery；连续多轮仍待。**
 - [ ] **T7.2 交替制造 A invalid / B invalid，验证两方向自动恢复。**
 
 ## 后续优化，不阻塞初版
