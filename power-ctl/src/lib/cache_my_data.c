@@ -65,7 +65,17 @@ static void eatmydata_init(void)
     ASSIGN_DLSYM(libc_sync_file_range, libc_sync_file_range_t,
                  "sync_file_range");
     ASSIGN_DLSYM(libc_syncfs, libc_syncfs_t, "syncfs");
-    ASSIGN_DLSYM(libc_pwritev64v2, libc_pwritev2_t, "pwritev64v2");
+    libc_pwritev64v2 = (libc_pwritev2_t)(intptr_t)dlsym(RTLD_NEXT,
+                                                        "pwritev64v2");
+    if (!libc_pwritev64v2)
+        libc_pwritev64v2 = (libc_pwritev2_t)(intptr_t)dlsym(RTLD_NEXT,
+                                                            "pwritev2");
+    if (!libc_pwritev64v2) {
+        const char *dlerror_str = dlerror();
+        fprintf(stderr, "libeatmydata init error for pwritev2: %s\n",
+                dlerror_str ? dlerror_str : "(null)");
+        _exit(1);
+    }
 }
 
 static void disable_force_pagecache(int signo)

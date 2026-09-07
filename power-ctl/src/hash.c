@@ -10,7 +10,9 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#if defined(__aarch64__) && defined(__ARM_FEATURE_CRC32)
 #include <arm_acle.h>
+#endif
 
 #include "hash.h"
 #include "common.h"
@@ -35,6 +37,7 @@ static double now_sec(void) {
 }
 
 static uint32_t crc32c_update(uint32_t crc, const uint8_t *data, size_t len) {
+#if defined(__aarch64__) && defined(__ARM_FEATURE_CRC32)
     const uint8_t *p = data;
 
     while (len >= 8) {
@@ -60,6 +63,25 @@ static uint32_t crc32c_update(uint32_t crc, const uint8_t *data, size_t len) {
     }
     if (len != 0) crc = __crc32cb(crc, *p);
     return crc;
+#else
+    const uint32_t polynomial = 0x82f63b78U;
+
+    while (len-- != 0U) {
+        unsigned int bit;
+
+        crc ^= *data++;
+        for (bit = 0; bit < 8U; ++bit)
+            crc = (crc >> 1) ^ ((crc & 1U) ? polynomial : 0U);
+    }
+    return crc;
+#endif
+}
+
+int hash_crc32(const uint8_t *data, size_t len, uint8_t digest[4]) {
+    uint32_t crc = ~crc32c_update(UINT32_MAX, data, len);
+
+    put_le32(digest, crc);
+    return 0;
 }
 
 int hash_sha256(const uint8_t *data, size_t len, uint8_t digest[32]) {
