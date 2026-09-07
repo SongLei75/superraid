@@ -124,13 +124,13 @@ GCP 直接在测试机上把这两个路径映射到现有 1 GiB `app_param/app_
 - [ ] **T1.1 seal → verify 正常通过；破坏 protected region 后 verify 失败。**
 - [x] **T1.2 A valid / B valid → mount A。**
 - [x] **T1.3 A valid / B invalid → mount A，恢复 B。**
-- [ ] **T1.4 A invalid / B valid → mount B，恢复 A。**
+- [x] **T1.4 A invalid / B valid → mount B，恢复 A。GCP 实测只破坏 A footer 后，启动明确挂载 `/dev/mmcblk0p27`，随后 B→A Recovery + peer verify PASS。**
 - [ ] **T1.5 A invalid / B invalid → mount service failed，App 不启动。**
 
 ### T2. Startup Recovery
 
 - [x] **T2.1 A→B：parent source offset 全分区 copy，peer fsync + verify PASS。**
-- [ ] **T2.2 B→A：与 T2.1 对称。**
+- [x] **T2.2 B→A：与 T2.1 对称。GCP 实测 active=B 时完整 B→A Recovery 成功，A post-copy verify PASS。**
 - [ ] **T2.3 active 已挂载且 App 持续 ordinary buffered write 时做 Recovery；比较 Recovery 前后 active physical protected-region hash，确认 Recovery source read 没有主动把修改刷入 active。**
 - [ ] **T2.4 Recovery read/write/verify 失败注入：`fsctl`/service 报错并恢复临时 dirty profile。**
 
@@ -157,15 +157,15 @@ GCP 直接在测试机上把这两个路径映射到现有 1 GiB `app_param/app_
 ### T6. power path
 
 - [x] **T6.1 active=A：`hb_powerctl_demo --prepare-only` 在 SubState=exited 后执行 disable-write → seal A → A→B，peer 独立 verify PASS。**
-- [ ] **T6.2 active=B：`hb_powerctl_demo --prepare-only` 等到 SubState=exited 后执行 disable-write → seal B → B→A。**
-- [ ] **T6.3 Recovery 正在执行时启动 demo：确认 SubState=running 时等待，`fsctl mount` 完成进入 exited 后才开始 freeze/copy；App 保持运行。**
+- [x] **T6.2 active=B：`hb_powerctl_demo --prepare-only` 实测解析 `active=/dev/mmcblk0p27 peer=/dev/mmcblk0p26`，执行 disable-write → seal B → B→A，prepare PASS。**
+- [x] **T6.3 Recovery 正在执行时启动 demo：GCP 实测 mount `SubState=running` 时 demo 持续输出 `POWERCTL_WAIT` 且不开始 hash/copy；进入 `exited` 后才输出 `POWERCTL_MOUNT_READY` 并执行 freeze/copy。**
 - [ ] **T6.4 suspend 在正式工程仍直接走原 powerctl suspend 路径，不进入新增 prepare。**
 - [ ] **T6.5 demo 默认模式验证 prepare 失败不改变“原 power transition continues”的控制流语义；正式工程保持原 systemd D-Bus 调用不变。**
 
 ### T7. 初版端到端
 
-- [ ] **T7.1 连续 reboot 多轮：boot verify → Recovery → App write → shutdown seal/copy → next boot verify。首轮 A→B 正常下电闭环已通过：next boot A/B 均 verify PASS、digest 相同、直接 mount A 且不触发 Recovery；连续多轮仍待。**
-- [ ] **T7.2 交替制造 A invalid / B invalid，验证两方向自动恢复。**
+- [x] **T7.1 连续 reboot 多轮：已完成多轮 boot verify → App write → power prepare → reboot；正常 prepare 后 next boot A/B 均 verify PASS、digest 相同、直接 mount A 且不触发 Recovery。期间额外一次未 prepare 的直接 reboot 也由启动 Recovery 自动收敛 peer。**
+- [x] **T7.2 交替制造 A invalid / B invalid：A invalid/B valid 时 mount B 并 B→A Recovery；B invalid/A valid 时 mount A 并 A→B Recovery；两方向 post-copy verify 均 PASS。**
 
 ## 后续优化，不阻塞初版
 
