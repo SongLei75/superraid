@@ -10,12 +10,17 @@
 #include <stddef.h>
 #include <stdint.h>
 
-int hash_sha256(const uint8_t *data, size_t len, uint8_t digest[32]);
+#define SHA256_DIGEST_SIZE 32
+#define DEFAULT_CHUNK_KIB 8192
 
-/* CRC32C (Castagnoli), result is written as little-endian digest[4]. */
+int hash_sha256(const uint8_t *data, size_t len,
+                uint8_t digest[SHA256_DIGEST_SIZE]);
+
 int hash_crc32(const uint8_t *data, size_t len, uint8_t digest[4]);
 
-/* SHA-256 over fd [0, len); chunk_kib <= 0 selects the 8 MiB default. */
-int hash_sha256_fd(int fd, uint64_t len, uint8_t digest[32], int chunk_kib);
+int hash_sha256_fd(int fd, uint64_t len, uint8_t digest[SHA256_DIGEST_SIZE],
+                   int chunk_kib);
+
+void hash_to_hex(const uint8_t digest[32], char output[(32 * 2U) + 1U]);
 
 #endif /* HASH_H */
