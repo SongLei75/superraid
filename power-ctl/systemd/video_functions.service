@@ -1,5 +1,5 @@
 [Unit]
-Description=SuperRAID GCP test writer B
+Description=App parameter buffered writer
 DefaultDependencies=no
 After=app_param-mount.service
 Requires=app_param-mount.service
@@ -7,8 +7,8 @@ Conflicts=shutdown.target
 
 [Service]
 Type=simple
-Environment="LD_PRELOAD=/usr/local/lib/libcachemydata.so"
-ExecStart=/usr/local/bin/app_param_test_loop /app_param video_functions.bin
+Environment="LD_PRELOAD=/usr/hobot/lib/libcachemydata.so"
+ExecStart=/usr/bin/app_param_test /app_param off
 Restart=no
 StandardOutput=journal
 StandardError=journal

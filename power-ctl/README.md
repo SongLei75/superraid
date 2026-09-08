@@ -1,48 +1,46 @@
-# power-ctl local test tree
+# power-ctl
 
-本目录用于把 `patch/` 中的 SuperRAID 关键代码还原成可直接构建并部署到 GCP 的测试工程。
+本目录包含 app_param A/B 校验、恢复、下电封存及 FAT 写入门控相关代码。
 
-## Source baseline
+主要模块：
 
-- `src/fat/`：基线来自 `/home/songlei/project/gcp-dev-baseline/src/linux-6.1.158/fs/fat`，随后按 `patch/hbre_power-ctl.patch` 中完整 `src/fat/*` 内容还原。
-- `src/fsctl.c`、`src/storage.[ch]`、`src/hash.[ch]`、`src/lib/cache_my_data.c`、测试程序：由 `patch/hbre_power-ctl.patch` 还原。
-- `systemd/`：GCP 初版测试 unit，A/B 上层路径与板端统一为 `/dev/mmcblk0p26`、`/dev/mmcblk0p27`。GCP 的设备 alias 直接部署在测试机，不保存在本目录。
+- `src/common.*`：跨模块通用基础能力，如字节序编解码、完整 pread/pwrite、fd 大小查询。
+- `src/hash.*`：SHA-256 与 CRC32C 计算。
+- `src/footer.*`：footer descriptor 的读取、校验与更新。
+- `src/storage.*`：块设备、挂载、恢复、复制及下电准备相关逻辑。
+- `src/lib/cache_my_data.c`：Recovery 阶段对显式 sync/direct 类接口进行门控的 preload 库。
+- `src/fat/`：带写入门控扩展的 FAT/VFAT 模块。
+- `src/test/app_param_test.c`：App 写入行为测试程序。
+- `systemd/`：app_param 挂载及测试 App service 示例。
 
-## Latest target changes applied locally
+## Standalone build
 
-相对原始 patch，本目录已经按当前 README/TODO 目标补入：
-
-1. startup Recovery 从 active partition 的 parent block device + partition start offset 做 `O_DIRECT pread()`。
-2. peer copy 后执行 `fsync + verify`，并要求 digest 等于启动时 `mounted_digest`。
-3. Recovery release 顺序改为 App gate release 后恢复 `vm.dirty_*`；Recovery 失败也恢复临时 dirty profile。
-4. block range copy 对 peer 使用 `O_EXCL`，并检查 size/range/alignment。
-5. CRC32C 改为 portable software implementation，便于 x86_64 GCP 构建；SHA-256 仍使用 OpenSSL EVP。
-6. `powerctl_resolve_active_peer()` 根据 `/app_param` 的 `st_dev` 与 A/B `st_rdev` 解析真实 active/peer，供现有 `libhbpowerctl` power path 接入。
-7. startup Recovery 仍在单个 `app_param-mount.service/fsctl` 中完成；`fsctl mount` 自身同步知道 Recovery 完成点。power path 的互斥只在现有 `fsctl` / `libhbpowerctl` 两条执行路径之间补最小机制，不新增 service。
-
-尚未实现的目标项以根目录 `TODO.md` 为准，当前主要是 C3、C5、I9、I11/I12 的剩余部分和 GCP 实机验证。
-
-## Build
+用户态默认通过系统 `pkg-config` 查找 libsystemd。
+内核模块默认使用当前运行内核的 build tree，也可显式传入产品工程参数：
 
 ```bash
-make
+make \
+  KERNEL_SRC=/path/to/kernel/source \
+  KERNEL_BUILD=/path/to/kernel/build \
+  KERNEL_CC=aarch64-linux-gnu-gcc
 ```
 
-默认使用：
+如系统无法通过 `pkg-config` 找到 libsystemd，可显式指定：
+
+```bash
+make \
+  SYSTEMD_CFLAGS='-I/path/to/systemd/include' \
+  SYSTEMD_LIB='-lsystemd'
+```
+
+
+## fsctl
 
 ```text
-kernel source = /home/songlei/project/gcp-dev-baseline/src/linux-6.1.158
-kernel build  = /home/songlei/project/gcp-dev-baseline/build/linux-6.1.158-rt58
-kernel CC     = gcc-12
+fsctl seal DEVICE
+fsctl verify DEVICE
+fsctl mount A:B MOUNTPOINT
+fsctl umount A:B MOUNTPOINT
 ```
 
-输出集中在：
-
-```text
-build/stage/bin/
-build/stage/lib/
-build/stage/modules/
-build/stage/systemd/
-```
-
-`fat.ko` / `vfat.ko` 的目标 vermagic 为 `6.1.158-rt58 SMP preempt_rt mod_unload modversions`。
+`umount` 是下电准备入口：冻结已挂载 FAT 的后续写入，更新 active descriptor，随后完整复制 active 到 peer；它不执行传统 Linux `umount(2)`。

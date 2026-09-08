@@ -1,11 +1,11 @@
 #define _GNU_SOURCE
 #include <errno.h>
+#include <inttypes.h>
 #include <openssl/evp.h>
 #include <pthread.h>
 #include <sched.h>
 #include <stdatomic.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -26,13 +26,18 @@ struct ring {
     } slots[RING_SLOTS];
     _Atomic uint32_t head;
     _Atomic uint32_t tail;
-    _Atomic int done;
-    _Atomic int error;
+    _Atomic uint32_t done;
+    _Atomic uint32_t error;
 };
 
 static double now_sec(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    struct timespec ts = {0};
+
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+        FSCTL_WARN("read monotonic clock for hash timing failed: %s",
+                   strerror(errno));
+        return 0.0;
+    }
     return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
 }
 
@@ -67,7 +72,7 @@ static uint32_t crc32c_update(uint32_t crc, const uint8_t *data, size_t len) {
     const uint32_t polynomial = 0x82f63b78U;
 
     while (len-- != 0U) {
-        unsigned int bit;
+        uint32_t bit;
 
         crc ^= *data++;
         for (bit = 0; bit < 8U; ++bit)
@@ -77,19 +82,22 @@ static uint32_t crc32c_update(uint32_t crc, const uint8_t *data, size_t len) {
 #endif
 }
 
-int hash_crc32(const uint8_t *data, size_t len, uint8_t digest[4]) {
+int32_t hash_crc32(const uint8_t *data, size_t len, uint8_t digest[4]) {
     uint32_t crc = ~crc32c_update(UINT32_MAX, data, len);
 
     put_le32(digest, crc);
     return 0;
 }
 
-int hash_sha256(const uint8_t *data, size_t len, uint8_t digest[32]) {
+int32_t hash_sha256(const uint8_t *data, size_t len, uint8_t digest[32]) {
     EVP_MD_CTX *ctx = EVP_MD_CTX_new();
     unsigned int digest_len = 0;
-    int result = -1;
+    int32_t result = -1;
 
-    if (ctx == NULL) return -1;
+    if (ctx == NULL) {
+        FSCTL_ERROR("EVP_MD_CTX_new failed");
+        return -1;
+    }
     if (EVP_DigestInit_ex(ctx, EVP_sha256(), NULL) == 1 &&
         EVP_DigestUpdate(ctx, data, len) == 1 &&
         EVP_DigestFinal_ex(ctx, digest, &digest_len) == 1 &&
@@ -97,11 +105,13 @@ int hash_sha256(const uint8_t *data, size_t len, uint8_t digest[32]) {
         result = 0;
     }
     EVP_MD_CTX_free(ctx);
+    if (result != 0)
+        FSCTL_ERROR("SHA-256 memory digest failed");
     return result;
 }
 
 struct producer_args {
-    int fd;
+    int32_t fd;
     uint64_t total_size;
     size_t chunk_size;
     struct ring *ring;
@@ -135,8 +145,8 @@ static void *producer_thread(void *arg) {
                            (off_t)offset);
         if (bytes_read <= 0 || (uint64_t)bytes_read < want) {
             if (bytes_read == 0) errno = EIO;
-            fprintf(stderr, "hash_sha256_fd: pread failed: %s\n",
-                    strerror(errno));
+            FSCTL_ERROR("hash pread failed offset=%" PRIu64 " want=%zu: %s",
+                        offset, want, strerror(errno));
             atomic_store(&args->ring->error, 1);
             atomic_store(&args->ring->done, 1);
             return NULL;
@@ -156,7 +166,7 @@ static void *producer_thread(void *arg) {
 struct consumer_args {
     struct ring *ring;
     uint8_t digest[32];
-    int error;
+    int32_t error;
 };
 
 static void *consumer_thread(void *arg) {
@@ -166,6 +176,7 @@ static void *consumer_thread(void *arg) {
     unsigned int digest_len = 0;
 
     if (ctx == NULL || EVP_DigestInit_ex(ctx, EVP_sha256(), NULL) != 1) {
+        FSCTL_ERROR("SHA-256 consumer init failed");
         args->error = -1;
         EVP_MD_CTX_free(ctx);
         return NULL;
@@ -186,6 +197,7 @@ static void *consumer_thread(void *arg) {
         slot = head % RING_SLOTS;
         if (EVP_DigestUpdate(ctx, args->ring->slots[slot].data,
                              args->ring->slots[slot].len) != 1) {
+            FSCTL_ERROR("SHA-256 consumer update failed");
             args->error = -1;
             atomic_store(&args->ring->error, 1);
             atomic_store(&args->ring->done, 1);
@@ -200,13 +212,14 @@ finish:
     if (!atomic_load(&args->ring->error) &&
         (EVP_DigestFinal_ex(ctx, args->digest, &digest_len) != 1 ||
          digest_len != 32U)) {
+        FSCTL_ERROR("SHA-256 consumer final failed");
         args->error = -1;
     }
     EVP_MD_CTX_free(ctx);
     return NULL;
 }
 
-int hash_sha256_fd(int fd, uint64_t len, uint8_t digest[32], int chunk_kib) {
+int32_t hash_sha256_fd(int32_t fd, uint64_t len, uint8_t digest[32]) {
     size_t chunk_size;
     size_t slot_stride;
     size_t buffer_size;
@@ -218,26 +231,31 @@ int hash_sha256_fd(int fd, uint64_t len, uint8_t digest[32], int chunk_kib) {
     struct consumer_args consumer_args = {0};
     double start;
     double elapsed;
-    int producer_created = 0;
-    int consumer_created = 0;
+    uint32_t producer_created = 0U;
+    uint32_t consumer_created = 0U;
 
-    if (len == 0) return hash_sha256((const uint8_t *)"", 0, digest);
-    if (chunk_kib <= 0) chunk_kib = DEFAULT_CHUNK_KIB;
-    if ((size_t)chunk_kib > SIZE_MAX / 1024U) return -1;
-    chunk_size = (size_t)chunk_kib * 1024U;
+    if (len == 0)
+        return hash_sha256((const uint8_t *)"", 0, digest);
+    FSCTL_DEBUG("hash start fd=%" PRId32 " bytes=%" PRIu64, fd, len);
+    chunk_size = (size_t)DEFAULT_CHUNK_KIB * 1024U;
     slot_stride = (chunk_size + 511U) & ~511U;
-    if (slot_stride < chunk_size || slot_stride > SIZE_MAX / RING_SLOTS)
+    if (slot_stride < chunk_size || slot_stride > SIZE_MAX / RING_SLOTS) {
+        FSCTL_ERROR("hash buffer size overflow chunk=%zu", chunk_size);
         return -1;
+    }
     buffer_size = slot_stride * RING_SLOTS;
 
-    if (posix_memalign((void **)&buffer, 512, buffer_size) != 0) return -1;
+    if (posix_memalign((void **)&buffer, 512, buffer_size) != 0) {
+        FSCTL_ERROR("hash buffer allocation failed size=%zu", buffer_size);
+        return -1;
+    }
     memset(buffer, 0, buffer_size);
 
     atomic_init(&ring.head, 0);
     atomic_init(&ring.tail, 0);
     atomic_init(&ring.done, 0);
     atomic_init(&ring.error, 0);
-    for (int i = 0; i < RING_SLOTS; ++i)
+    for (uint32_t i = 0; i < RING_SLOTS; ++i)
         ring.slots[i].data = buffer + (size_t)i * slot_stride;
 
     producer_args.fd = fd;
@@ -248,32 +266,40 @@ int hash_sha256_fd(int fd, uint64_t len, uint8_t digest[32], int chunk_kib) {
 
     start = now_sec();
     if (pthread_create(&consumer, NULL, consumer_thread, &consumer_args) == 0) {
-        consumer_created = 1;
+        consumer_created = 1U;
     } else {
+        FSCTL_ERROR("hash consumer thread create failed");
         atomic_store(&ring.error, 1);
         atomic_store(&ring.done, 1);
     }
     if (consumer_created &&
         pthread_create(&producer, NULL, producer_thread, &producer_args) == 0) {
-        producer_created = 1;
+        producer_created = 1U;
     } else {
+        FSCTL_ERROR("hash producer thread create failed");
         atomic_store(&ring.error, 1);
         atomic_store(&ring.done, 1);
     }
-    if (producer_created) pthread_join(producer, NULL);
-    if (consumer_created) pthread_join(consumer, NULL);
+    if (producer_created != 0U && pthread_join(producer, NULL) != 0) {
+        FSCTL_ERROR("hash producer thread join failed");
+        atomic_store(&ring.error, 1);
+    }
+    if (consumer_created != 0U && pthread_join(consumer, NULL) != 0) {
+        FSCTL_ERROR("hash consumer thread join failed");
+        atomic_store(&ring.error, 1);
+    }
     elapsed = now_sec() - start;
 
     if (atomic_load(&ring.error) || consumer_args.error) {
+        FSCTL_ERROR("hash calculation failed fd=%" PRId32, fd);
         free(buffer);
         return -1;
     }
     memcpy(digest, consumer_args.digest, 32);
-    fprintf(stderr,
-            "hash calc: %llu bytes, chunk=%d KiB, ring=%d slots, "
-            "time=%.3f s, speed=%.1f MiB/s\n",
-            (unsigned long long)len, chunk_kib, RING_SLOTS, elapsed,
-            (double)(len / (1024 * 1024)) / (elapsed + 1e-9));
+    FSCTL_INFO("hash complete bytes=%" PRIu64 " chunk=%uKiB ring=%u "
+               "time=%.3fs speed=%.1fMiB/s",
+               len, DEFAULT_CHUNK_KIB, RING_SLOTS, elapsed,
+               (double)(len / (1024U * 1024U)) / (elapsed + 1e-9));
     free(buffer);
     return 0;
 }

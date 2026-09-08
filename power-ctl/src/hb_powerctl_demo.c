@@ -1,62 +1,69 @@
 #define _GNU_SOURCE
 
 #include <errno.h>
+#include <inttypes.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+
 #include <systemd/sd-bus.h>
 
+#include "common.h"
 #include "storage.h"
 
 #define APP_PARAM_MOUNTPOINT "/app_param"
-#define APP_PARAM_DEVICE "/dev/disk/by-partlabel/app_param"
-#define APP_PARAM_BACKUP_DEVICE "/dev/disk/by-partlabel/app_param_bak"
-#define APP_PARAM_HASH_CHUNK_KIB 0
+#define APP_PARAM_DEVICES "/dev/mmcblk0p26:/dev/mmcblk0p27"
 #define APP_PARAM_MOUNT_SERVICE "app_param-mount.service"
 #define APP_PARAM_READY_TIMEOUT_USEC (60ULL * 1000000ULL)
 
-static int get_unit_substate(sd_bus *bus, const char *unit, char **substate)
-{
+static int32_t get_unit_substate(sd_bus *bus, const char *unit,
+                                 char **substate) {
     sd_bus_error error = SD_BUS_ERROR_NULL;
     sd_bus_message *reply = NULL;
     const char *unit_path;
-    int result;
+    int32_t result;
+
+    if (bus == NULL || unit == NULL || substate == NULL) {
+        errno = EINVAL;
+        FSCTL_ERROR("invalid mount service query arguments");
+        return -1;
+    }
 
     *substate = NULL;
-    result = sd_bus_call_method(bus,
-                                "org.freedesktop.systemd1",
-                                "/org/freedesktop/systemd1",
-                                "org.freedesktop.systemd1.Manager",
-                                "GetUnit", &error, &reply, "s", unit);
+    result = (int32_t)sd_bus_call_method(
+        bus, "org.freedesktop.systemd1", "/org/freedesktop/systemd1",
+        "org.freedesktop.systemd1.Manager", "GetUnit", &error, &reply, "s",
+        unit);
     if (result >= 0)
-        result = sd_bus_message_read(reply, "o", &unit_path);
+        result = (int32_t)sd_bus_message_read(reply, "o", &unit_path);
     if (result >= 0)
-        result = sd_bus_get_property_string(bus,
-                                            "org.freedesktop.systemd1",
-                                            unit_path,
-                                            "org.freedesktop.systemd1.Unit",
-                                            "SubState", &error, substate);
+        result = (int32_t)sd_bus_get_property_string(
+            bus, "org.freedesktop.systemd1", unit_path,
+            "org.freedesktop.systemd1.Unit", "SubState", &error, substate);
     if (result < 0)
-        fprintf(stderr, "hb_powerctl_demo: cannot query %s SubState: %s\n",
-                unit, error.message != NULL ? error.message : strerror(-result));
+        FSCTL_ERROR("query mount service SubState failed unit=%s: %s", unit,
+                    error.message != NULL ? error.message : strerror(-result));
+
     sd_bus_message_unref(reply);
     sd_bus_error_free(&error);
     return result;
 }
 
-static int wait_mount_recovery_complete(void)
-{
+static int32_t wait_mount_recovery_complete(void) {
     sd_bus *bus = NULL;
     struct timespec start_time;
-    int result;
+    int32_t result;
 
-    result = sd_bus_open_system(&bus);
-    if (result < 0)
+    result = (int32_t)sd_bus_open_system(&bus);
+    if (result < 0) {
+        FSCTL_ERROR("connect system bus failed: %s", strerror(-result));
         return result;
+    }
     if (clock_gettime(CLOCK_MONOTONIC, &start_time) != 0) {
+        FSCTL_ERROR("read monotonic clock failed: %s", strerror(errno));
         sd_bus_unref(bus);
         return -1;
     }
@@ -72,8 +79,7 @@ static int wait_mount_recovery_complete(void)
             return result;
         }
         if (strcmp(substate, "exited") == 0) {
-            printf("POWERCTL_MOUNT_READY service=%s substate=%s\n",
-                   APP_PARAM_MOUNT_SERVICE, substate);
+            FSCTL_INFO("mount recovery complete service=%s", APP_PARAM_MOUNT_SERVICE);
             free(substate);
             sd_bus_unref(bus);
             return 0;
@@ -82,77 +88,68 @@ static int wait_mount_recovery_complete(void)
             strcmp(substate, "start") != 0 &&
             strcmp(substate, "start-post") != 0 &&
             strcmp(substate, "running") != 0) {
-            fprintf(stderr, "hb_powerctl_demo: unusable SubState=%s\n", substate);
+            FSCTL_ERROR("mount service unusable state=%s", substate);
             free(substate);
             sd_bus_unref(bus);
             errno = EIO;
             return -1;
         }
-        printf("POWERCTL_WAIT service=%s substate=%s\n",
-               APP_PARAM_MOUNT_SERVICE, substate);
+        FSCTL_DEBUG("wait mount recovery service=%s state=%s",
+                    APP_PARAM_MOUNT_SERVICE, substate);
         free(substate);
 
         if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+            FSCTL_ERROR("read monotonic clock failed: %s", strerror(errno));
             sd_bus_unref(bus);
             return -1;
         }
         elapsed = (uint64_t)(now.tv_sec - start_time.tv_sec) * 1000000ULL;
-        if (now.tv_nsec >= start_time.tv_nsec)
+        if (now.tv_nsec >= start_time.tv_nsec) {
             elapsed += (uint64_t)(now.tv_nsec - start_time.tv_nsec) / 1000ULL;
-        else {
+        } else {
             elapsed -= 1000000ULL;
-            elapsed += (uint64_t)(1000000000L + now.tv_nsec - start_time.tv_nsec) / 1000ULL;
+            elapsed +=
+                (uint64_t)(1000000000L + now.tv_nsec - start_time.tv_nsec) /
+                1000ULL;
         }
         if (elapsed >= APP_PARAM_READY_TIMEOUT_USEC) {
+            FSCTL_ERROR("mount recovery wait timeout seconds=%" PRIu64,
+                        (uint64_t)(APP_PARAM_READY_TIMEOUT_USEC / 1000000ULL));
             sd_bus_unref(bus);
             errno = ETIMEDOUT;
             return -1;
         }
-        usleep(100000);
+        usleep(100000U);
     }
 }
 
-static int prepare_app_param(void)
-{
-    const char *active;
-    const char *peer;
-
+static int32_t prepare_app_param(void) {
     if (wait_mount_recovery_complete() != 0)
         return -1;
-    if (powerctl_resolve_active_peer(APP_PARAM_MOUNTPOINT, APP_PARAM_DEVICE,
-                                     APP_PARAM_BACKUP_DEVICE,
-                                     &active, &peer) != 0)
-        return -1;
-    printf("POWERCTL_DIRECTION active=%s peer=%s\n", active, peer);
-    if (powerctl_disable_vfat_write(APP_PARAM_MOUNTPOINT) != 0)
-        return -1;
-    if (powerctl_seal_block_device(active, APP_PARAM_HASH_CHUNK_KIB,
-                                   NULL, NULL) != 0)
-        return -1;
-    if (powerctl_copy_block_device(active, peer) != 0)
-        return -1;
-    printf("POWERCTL_PREPARE_OK active=%s peer=%s\n", active, peer);
-    return 0;
+    return umount_partition(APP_PARAM_DEVICES, APP_PARAM_MOUNTPOINT) == EXIT_OK
+               ? 0
+               : -1;
 }
 
-int main(int argc, char **argv)
-{
-    int prepare_only = 0;
-    int result;
+int main(int argc, char **argv) {
+    uint32_t prepare_only = 0U;
+    int32_t result;
 
-    if (argc == 2 && strcmp(argv[1], "--prepare-only") == 0)
-        prepare_only = 1;
-    else if (argc != 1) {
+    if (argc == 2 && strcmp(argv[1], "--prepare-only") == 0) {
+        prepare_only = 1U;
+    } else if (argc != 1) {
+        FSCTL_WARN("invalid powerctl demo arguments");
         fprintf(stderr, "Usage: %s [--prepare-only]\n", argv[0]);
         return 2;
     }
 
     result = prepare_app_param();
-    if (prepare_only)
+    if (prepare_only != 0U)
         return result == 0 ? 0 : 1;
+
     if (result != 0)
-        fprintf(stderr, "hb_powerctl_demo: prepare failed; original power transition still continues\n");
+        FSCTL_ERROR("power prepare failed; original power transition continues");
     else
-        printf("hb_powerctl_demo: prepare succeeded; original power transition continues\n");
+        FSCTL_INFO("power prepare succeeded; original power transition continues");
     return 0;
 }

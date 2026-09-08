@@ -15,7 +15,6 @@
 #include <stdint.h>
 #include <sys/mman.h>
 #include <signal.h>
-#include <stdbool.h>
 
 typedef int (*libc_open_t)(const char *, int, ...);
 typedef int (*libc_openat_t)(int, const char *, int, ...);
@@ -27,8 +26,9 @@ typedef int (*libc_fdatasync_t)(int);
 typedef int (*libc_msync_t)(void *, size_t, int);
 typedef int (*libc_sync_file_range_t)(int, off64_t, off64_t, unsigned int);
 typedef int (*libc_syncfs_t)(int);
-typedef ssize_t (*libc_pwritev2_t)(int, const struct iovec *, int, off64_t,
-                                   int);
+typedef ssize_t (*libc_pwritev2_t)(int, const struct iovec *, int, off_t, int);
+typedef ssize_t (*libc_pwritev64v2_t)(int, const struct iovec *, int, off64_t,
+                                      int);
 static libc_open_t libc_open = NULL;
 static libc_openat_t libc_openat = NULL;
 static libc_creat_t libc_creat = NULL;
@@ -39,7 +39,8 @@ static libc_fdatasync_t libc_fdatasync = NULL;
 static libc_msync_t libc_msync = NULL;
 static libc_sync_file_range_t libc_sync_file_range = NULL;
 static libc_syncfs_t libc_syncfs = NULL;
-static libc_pwritev2_t libc_pwritev64v2 = NULL;
+static libc_pwritev2_t libc_pwritev2 = NULL;
+static libc_pwritev64v2_t libc_pwritev64v2 = NULL;
 
 static volatile sig_atomic_t force_pagecache = 1;
 
@@ -47,7 +48,7 @@ static volatile sig_atomic_t force_pagecache = 1;
     target = (type)(intptr_t)dlsym(RTLD_NEXT, symbol);                  \
     if (!target) {                                                      \
         const char *dlerror_str = dlerror();                            \
-        fprintf(stderr, "libeatmydata init error for %s: %s\n",         \
+        fprintf(stderr, "libcachemydata init error for %s: %s\n",         \
                 symbol, dlerror_str ? dlerror_str : "(null)");          \
         _exit(1);                                                       \
     }
@@ -65,17 +66,8 @@ static void eatmydata_init(void)
     ASSIGN_DLSYM(libc_sync_file_range, libc_sync_file_range_t,
                  "sync_file_range");
     ASSIGN_DLSYM(libc_syncfs, libc_syncfs_t, "syncfs");
-    libc_pwritev64v2 = (libc_pwritev2_t)(intptr_t)dlsym(RTLD_NEXT,
-                                                        "pwritev64v2");
-    if (!libc_pwritev64v2)
-        libc_pwritev64v2 = (libc_pwritev2_t)(intptr_t)dlsym(RTLD_NEXT,
-                                                            "pwritev2");
-    if (!libc_pwritev64v2) {
-        const char *dlerror_str = dlerror();
-        fprintf(stderr, "libeatmydata init error for pwritev2: %s\n",
-                dlerror_str ? dlerror_str : "(null)");
-        _exit(1);
-    }
+    ASSIGN_DLSYM(libc_pwritev2, libc_pwritev2_t, "pwritev2");
+    ASSIGN_DLSYM(libc_pwritev64v2, libc_pwritev64v2_t, "pwritev64v2");
 }
 
 static void disable_force_pagecache(int signo)
@@ -118,7 +110,7 @@ void sync(void)
 
 int open(const char *pathname, int flags, ...)
 {
-    int needs_mode;
+    uint32_t needs_mode;
     mode_t mode = 0;
 
     if (force_pagecache && (flags & (O_DIRECT | O_SYNC | O_DSYNC))) {
@@ -140,7 +132,7 @@ int open(const char *pathname, int flags, ...)
 
 int openat(int dirfd, const char *pathname, int flags, ...)
 {
-    int needs_mode;
+    uint32_t needs_mode;
     mode_t mode = 0;
 
     if (force_pagecache && (flags & (O_DIRECT | O_SYNC | O_DSYNC))) {
@@ -205,7 +197,7 @@ int fcntl(int fd, int cmd, ...)
         return libc_fcntl(fd, cmd);
     }
     if (cmd == F_SETFL) {
-        int fl = va_arg(ap, int);
+        int32_t fl = (int32_t)va_arg(ap, int);
         va_end(ap);
         if (force_pagecache && (fl & (O_DIRECT | O_SYNC | O_DSYNC))) {
             errno = EOPNOTSUPP;
@@ -218,13 +210,28 @@ int fcntl(int fd, int cmd, ...)
     return libc_fcntl(fd, cmd, arg);
 }
 
-ssize_t pwritev64v2(int fd, const struct iovec *iov, int iovcnt,
-                    off64_t offset, int flags)
+static int32_t reject_pwritev2_flags(int flags)
 {
     if (force_pagecache && (flags & (RWF_SYNC | RWF_DSYNC))) {
         errno = EOPNOTSUPP;
-        return -1;
+        return 1;
     }
+    return 0;
+}
+
+ssize_t pwritev2(int fd, const struct iovec *iov, int iovcnt,
+                 off_t offset, int flags)
+{
+    if (reject_pwritev2_flags(flags))
+        return -1;
+    return libc_pwritev2(fd, iov, iovcnt, offset, flags);
+}
+
+ssize_t pwritev64v2(int fd, const struct iovec *iov, int iovcnt,
+                    off64_t offset, int flags)
+{
+    if (reject_pwritev2_flags(flags))
+        return -1;
     return libc_pwritev64v2(fd, iov, iovcnt, offset, flags);
 }
 

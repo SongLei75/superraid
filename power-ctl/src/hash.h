@@ -13,13 +13,13 @@
 #define SHA256_DIGEST_SIZE 32
 #define DEFAULT_CHUNK_KIB 8192
 
-int hash_sha256(const uint8_t *data, size_t len,
+int32_t hash_sha256(const uint8_t *data, size_t len,
                 uint8_t digest[SHA256_DIGEST_SIZE]);
 
-int hash_crc32(const uint8_t *data, size_t len, uint8_t digest[4]);
+int32_t hash_crc32(const uint8_t *data, size_t len, uint8_t digest[4]);
 
-int hash_sha256_fd(int fd, uint64_t len, uint8_t digest[SHA256_DIGEST_SIZE],
-                   int chunk_kib);
+int32_t hash_sha256_fd(int32_t fd, uint64_t len,
+                   uint8_t digest[SHA256_DIGEST_SIZE]);
 
 void hash_to_hex(const uint8_t digest[32], char output[(32 * 2U) + 1U]);
 

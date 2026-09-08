@@ -29,7 +29,6 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
-#include <sys/types.h>
 #include <sys/uio.h>
 #include <time.h>
 #include <unistd.h>
@@ -872,16 +871,38 @@ static int run_rounds(const char* root,
   return 0;
 }
 
+static int wait_continuous_interval(void) {
+  struct timespec delay = {.tv_sec = 1, .tv_nsec = 0};
+
+  while (running && nanosleep(&delay, &delay) != 0) {
+    if (errno != EINTR) return -1;
+  }
+  return 0;
+}
+
 static int run_continuous(const char* root, int do_fsync) {
   char held_path[512];
   char write_path[512];
+  const char* held_name =
+      do_fsync ? "held_file_sync.txt" : "held_file_buffered.txt";
+  const char* write_name =
+      do_fsync ? "write_file_sync.txt" : "write_file_buffered.txt";
   int held_fd;
   int fd;
   off_t size = 0;
-  unsigned long long seq = 0;
+  unsigned long long iteration = 0;
+  unsigned long long write_ok = 0;
+  unsigned long long write_fail = 0;
+  unsigned long long fsync_ok = 0;
+  unsigned long long fsync_fail = 0;
+  unsigned long long truncate_ok = 0;
+  unsigned long long truncate_fail = 0;
+  int write_errno = 0;
+  int fsync_errno = 0;
+  int truncate_errno = 0;
 
-  if (make_path(held_path, sizeof(held_path), root, "held_file.txt") != 0 ||
-      make_path(write_path, sizeof(write_path), root, "write_file.txt") != 0)
+  if (make_path(held_path, sizeof(held_path), root, held_name) != 0 ||
+      make_path(write_path, sizeof(write_path), root, write_name) != 0)
     return 1;
   held_fd = open(held_path, O_CREAT | O_RDWR | O_CLOEXEC, 0666);
   fd = open(write_path, O_CREAT | O_RDWR | O_TRUNC | O_CLOEXEC, 0666);
@@ -890,26 +911,89 @@ static int run_continuous(const char* root, int do_fsync) {
     if (held_fd >= 0) close(held_fd);
     return 1;
   }
-  printf("RUN mode=%s class=CONTINUOUS api=pwrite%s\n",
+  printf("RUN mode=%s class=CONTINUOUS api=pwrite%s interval=1s file=%s\n",
          run_mode(),
-         do_fsync ? "+fsync" : "");
+         do_fsync ? "+fsync" : "",
+         write_path);
+  fflush(stdout);
+
   while (running) {
     char buffer[256];
-    int count = snprintf(
-        buffer, sizeof(buffer), "seq=%llu ts=%ld\n", seq, (long)time(NULL));
+    int count = snprintf(buffer, sizeof(buffer), "iteration=%llu ts=%ld\n",
+                         iteration, (long)time(NULL));
+    ssize_t written;
 
     if (size + count > (off_t)(64 * 1024 * 1024)) {
-      if (ftruncate(fd, 0) != 0) perror("ftruncate");
-      size = 0;
+      errno = 0;
+      if (ftruncate(fd, 0) == 0) {
+        truncate_ok++;
+        size = 0;
+      } else {
+        truncate_fail++;
+        truncate_errno = errno != 0 ? errno : EIO;
+      }
     }
-    if (pwrite(fd, buffer, (size_t)count, size) != count) break;
-    size += count;
-    if (do_fsync && fsync(fd) != 0) break;
-    ++seq;
+
+    errno = 0;
+    written = pwrite(fd, buffer, (size_t)count, size);
+    write_errno = 0;
+    if (written == count) {
+      write_ok++;
+      size += written;
+    } else {
+      write_fail++;
+      write_errno = errno != 0 ? errno : EIO;
+    }
+
+    fsync_errno = 0;
+    if (do_fsync) {
+      errno = 0;
+      if (fsync(fd) == 0) {
+        fsync_ok++;
+      } else {
+        fsync_fail++;
+        fsync_errno = errno != 0 ? errno : EIO;
+      }
+    }
+
+    printf("CONTINUOUS_STATS iteration=%llu write_ok=%llu write_fail=%llu "
+           "write_errno=%d fsync_ok=%llu fsync_fail=%llu fsync_errno=%d "
+           "truncate_ok=%llu truncate_fail=%llu truncate_errno=%d size=%lld\n",
+           iteration,
+           write_ok,
+           write_fail,
+           write_errno,
+           fsync_ok,
+           fsync_fail,
+           fsync_errno,
+           truncate_ok,
+           truncate_fail,
+           truncate_errno,
+           (long long)size);
+    fflush(stdout);
+    iteration++;
+
+    if (wait_continuous_interval() != 0) {
+      fprintf(stderr, "nanosleep: errno=%d error=%s\n", errno,
+              strerror(errno));
+      break;
+    }
   }
+
   close(fd);
   if (held_fd >= 0) close(held_fd);
-  printf("CONTINUOUS stopped seq=%llu final_size=%lld\n", seq, (long long)size);
+  printf("CONTINUOUS_STOP iterations=%llu write_ok=%llu write_fail=%llu "
+         "fsync_ok=%llu fsync_fail=%llu truncate_ok=%llu truncate_fail=%llu "
+         "final_size=%lld\n",
+         iteration,
+         write_ok,
+         write_fail,
+         fsync_ok,
+         fsync_fail,
+         truncate_ok,
+         truncate_fail,
+         (long long)size);
+  fflush(stdout);
   return 0;
 }
 

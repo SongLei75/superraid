@@ -1,22 +1,22 @@
-# SuperRAID TODO
+# power-ctl TODO
 
 `README.md` 定义最终目标方案；`patch/` 保存原始工程 patch 并只作为参考；后续代码修改只进入 `power-ctl/`。本文件只保留当前初版闭环仍需确认、补充和验证的事项。
 
-GCP A/B 测试上层设备名与板端统一：
+A/B 测试上层设备名与产品板统一：
 
 ```text
 A = /dev/mmcblk0p26
 B = /dev/mmcblk0p27
 ```
 
-GCP 直接在测试机上把这两个路径映射到现有 1 GiB `app_param/app_param_bak` 分区；该测试机环境配置不保存在本工程目录。
+独立测试环境可把这两个路径映射到现有 1 GiB `app_param/app_param_bak` 分区；测试机环境配置不保存在本工程目录。
 
 ## 已明确
 
 - [x] **C1 Recovery writeback 的目标语义。**
   - 目标是通过 `vm.dirty_*` 把 Recovery 短窗口内 App 的 ordinary buffered file data 和 FAT metadata 尽量留在 cache 中。
-  - Linux 6.1.158 中 `dirty_writeback_centisecs=0` 虽关闭 periodic writeback，但 `wb_wakeup_delayed()` 会把首次 dirty inode 的 delayed work 以 0 jiffies 排队；GCP ftrace 已实际命中 `wb_workfn → generic_writepages → __block_write_full_page`。
-  - 当前测试 profile 改为 `dirty_writeback_centisecs=6000 / dirty_background_ratio=50 / dirty_ratio=50`，用 60 秒覆盖当前约 30 秒级 Recovery 窗口；后续仍按实际最长 Recovery 时间和 dirty bytes 留余量。
+  - Linux 6.1.158 中 `dirty_writeback_centisecs=0` 虽关闭 periodic writeback，但 `wb_wakeup_delayed()` 会把首次 dirty inode 的 delayed work 以 0 jiffies 排队；ftrace 已实际命中 `wb_workfn → generic_writepages → __block_write_full_page`。
+  - 当前测试 profile 改为 `dirty_writeback_centisecs=6000 / dirty_background_ratio=80 / dirty_ratio=90`，用 60 秒覆盖当前约 30 秒级 Recovery 窗口；后续仍按实际最长 Recovery 时间和 dirty bytes 留余量。
 
 - [x] **C2 peer Recovery 失败语义。**
   - peer read / write / verify 出错时 `fsctl` 返回失败，`app_param-mount.service` 进入错误状态并记录日志。
@@ -27,12 +27,12 @@ GCP 直接在测试机上把这两个路径映射到现有 1 GiB `app_param/app_
   - 产品 App 只考虑一次启动成功或启动失败，本轮不设计 NORMAL 后重新 exec/restart 的 gate 继承。
 
 - [x] **C6 power prepare 后续失败处理。**
-  - shutdown/reboot 已经发起后，seal/copy/verify 等 SuperRAID 步骤出错只记录错误，仍继续原有 systemd power transition。
+  - shutdown/reboot 已经发起后，seal/copy/verify 等 app_param prepare 步骤出错只记录错误，仍继续原有 systemd power transition。
   - 不增加 re-enable write gate / rollback 到业务运行态的逻辑。
 
 - [x] **C8 当前以 J6M 为产品验证目标。**
-  - 本机/GCP 初版测试不处理 J6P manifest。
-  - GCP 全链路跑通后再同步回正式工程目录和产品 manifest。
+  - 独立测试工程初版测试不处理 J6P manifest。
+  - 独立测试全链路跑通后再同步回正式工程目录和产品 manifest。
 
 - [x] **I1 startup Recovery source 使用 parent block device + partition offset。**
   - `power-ctl/src/storage.c` 已增加 partition → parent/start offset 解析和 range copy。
@@ -47,7 +47,7 @@ GCP 直接在测试机上把这两个路径映射到现有 1 GiB `app_param/app_
 - [x] **I13 初版 storage fail-closed 检查。**
   - range copy 已检查 source/destination 不是同一路径、destination size 等于 copy length、range 不越界、Direct I/O 对齐，并对 writable peer 使用 `O_EXCL`。
 
-- [x] **I15 x86_64 GCP CRC32C 构建路径。**
+- [x] **I15 x86_64 CRC32C 兼容构建路径。**
   - descriptor 只有 128 B，`power-ctl/src/hash.c` 已改成 portable CRC32C；SHA-256 继续使用 OpenSSL EVP。
 
 ## 已确认问题，处理方案待定
@@ -92,7 +92,7 @@ GCP 直接在测试机上把这两个路径映射到现有 1 GiB `app_param/app_
   - `fat_ioctl_fitrim()` 现在在 ioctl 入口获取 `fat_begin_write()`，退出时 `fat_end_write()`。
   - disable-write 前已经开始的 FITRIM 会先完成；disable-write 成功后新的 FITRIM 返回 `-EROFS`，不会再从该入口发出 discard。
 
-- [x] **I20 GCP x86_64 `libcachemydata.so` preload 已可启动。**
+- [x] **I20 x86_64 `libcachemydata.so` preload 已可启动。**
   - constructor 解析 `pwritev64v2` 时，若 glibc 不导出该符号则退到 64 位等价的 `pwritev2`；其他 ABI 不扩展。
   - 本机 `LD_PRELOAD=... /bin/true` 已通过，不再因缺少 `pwritev64v2` 直接 `_exit(1)`。
 
@@ -100,7 +100,7 @@ GCP 直接在测试机上把这两个路径映射到现有 1 GiB `app_param/app_
   - active 已在 freeze 后 seal 为有效版本；`powerctl_copy_block_device()` 完整复制 active 到 peer 并 `fsync(peer)`，当前初版以 copy/fsync 成功作为下电备份完成条件。
   - startup Recovery 的 copy 后 verify 保持不变。
 
-- [x] **I17 保持原下电流程，只在前面插入 SuperRAID prepare。**
+- [x] **I17 保持原下电流程，只在前面插入 app_param prepare。**
   - 正式 `hb_powerctl_reboot()` 的原 systemd D-Bus shutdown/reboot 调用保持不变。
   - 新增 prepare 在该调用前执行；prepare 内部 fail-fast，但其失败只记录，不 `goto cleanup`，随后仍进入原 systemd D-Bus 调用。
   - `hb_powerctl_demo` 默认模式模拟该语义：prepare 成功/失败后都打印 original power transition continues；`--prepare-only` 仅用于单独测试 prepare 返回值，不实际发起 shutdown/reboot。
@@ -108,14 +108,14 @@ GCP 直接在测试机上把这两个路径映射到现有 1 GiB `app_param/app_
 
 ## 待测试
 
-### T0. 本地构建与 GCP 部署准备
+### T0. 独立构建与测试部署准备
 
-- [x] **T0.1 编译 `power-ctl/src/fat` 的 `fat.ko` / `vfat.ko`，目标内核为 GCP `6.1.158-rt58`。**
+- [x] **T0.1 编译 `power-ctl/src/fat` 的 `fat.ko` / `vfat.ko`，目标测试内核为 `6.1.158-rt58`。**
   - 已使用 gcc-12 编译，`fat.ko` / `vfat.ko` vermagic 均为 `6.1.158-rt58 SMP preempt_rt mod_unload modversions`。
-- [x] **T0.2 编译 `fsctl`、`hb_powerctl_demo`、`libcachemydata.so`、`app_param_test`、`app_param_test_loop`。**
+- [x] **T0.2 编译 `fsctl`、`hb_powerctl_demo`、`libcachemydata.so`、`app_param_test`。**
   - 本地均已构建；`stage` 在完整 `make all` 时生成。
-- [x] **T0.3 在 GCP 直接创建 `/dev/mmcblk0p26/27` 测试 alias，并部署本地已构建的 systemd unit、二进制和 ko。**
-  - alias 只属于 GCP 测试机环境，不进入本工程。
+- [x] **T0.3 在测试环境直接创建 `/dev/mmcblk0p26/27` 测试 alias，并部署本地已构建的 systemd unit、二进制和 ko。**
+  - alias 只属于测试机环境，不进入本工程。
 
 - [x] **T0.4 初始化 A/B 4 KiB VFINTEG footer，并保留可重复恢复的 known-good 镜像。**
 
@@ -124,32 +124,32 @@ GCP 直接在测试机上把这两个路径映射到现有 1 GiB `app_param/app_
 - [ ] **T1.1 seal → verify 正常通过；破坏 protected region 后 verify 失败。**
 - [x] **T1.2 A valid / B valid → mount A。**
 - [x] **T1.3 A valid / B invalid → mount A，恢复 B。**
-- [x] **T1.4 A invalid / B valid → mount B，恢复 A。GCP 实测只破坏 A footer 后，启动明确挂载 `/dev/mmcblk0p27`，随后 B→A Recovery + peer verify PASS。**
+- [x] **T1.4 A invalid / B valid → mount B，恢复 A。实测只破坏 A footer 后，启动明确挂载 `/dev/mmcblk0p27`，随后 B→A Recovery + peer verify PASS。**
 - [ ] **T1.5 A invalid / B invalid → mount service failed，App 不启动。**
 
 ### T2. Startup Recovery
 
 - [x] **T2.1 A→B：parent source offset 全分区 copy，peer fsync + verify PASS。**
-- [x] **T2.2 B→A：与 T2.1 对称。GCP 实测 active=B 时完整 B→A Recovery 成功，A post-copy verify PASS。**
-- [ ] **T2.3 active 已挂载且 App 持续 ordinary buffered write 时做 Recovery；比较 Recovery 前后 active physical protected-region hash，确认 Recovery source read 没有主动把修改刷入 active。**
+- [x] **T2.2 B→A：与 T2.1 对称。实测 active=B 时完整 B→A Recovery 成功，A post-copy verify PASS。**
+- [x] **T2.3 active 已挂载且 App 持续 ordinary buffered write 时做 Recovery：内核 trace 以 SIGUSR2 为 release 边界确认 release 前 active protected region 物理写请求为 0，Recovery source read 未主动把 App 修改刷入 active。**
 - [ ] **T2.4 Recovery read/write/verify 失败注入：`fsctl`/service 报错并恢复临时 dirty profile。**
 
 ### T3. cachemydata
 
 - [x] **T3.1 gate ON：ordinary buffered write 正常，`fsync/fdatasync/sync/syncfs/msync/sync_file_range` 和 `O_DIRECT/O_SYNC/O_DSYNC` 入口被拦截。**
-- [ ] **T3.2 SIGUSR2 release 后重复基本接口，恢复真实 libc 行为。**
+- [x] **T3.2 SIGUSR2 release 后同一 App PID 继续运行，write 持续成功，原先被拒绝的 fsync 从失败计数切换为成功计数，恢复真实 libc 行为。**
 - [ ] **T3.3 [暂缓] 后续修复 C3 后验证 constructor-ready → release 时序。**
 - [ ] **T3.4 [暂缓] 后续处理 release 等待超时/查询失败语义。**
 
 ### T4. Recovery writeback profile
 
-- [x] **T4.1 `6000 / 50 / 50` 完整 A→B Recovery 通过：临时 profile 持续约 45.6 秒，peer verify PASS；仅在恢复原 `500 / 10 / 20` 的边界触发正常 writeback，恢复后 App buffered 修改继续落盘。**
+- [x] **T4.1 `6000 / 80 / 90` 完整 A→B Recovery 通过：临时 profile 持续约 45.6 秒，peer verify PASS；仅在恢复原 `500 / 10 / 20` 的边界触发正常 writeback，恢复后 App buffered 修改继续落盘。**
 - [x] **T4.2 已定位 `0` profile 的提前 writeback 根因：首次 dirty inode 经 `wb_wakeup_delayed()` 以 0 jiffies 立即排队；改为 6000 centisecs 后复测。**
 
 ### T5. FAT write gate
 
 - [ ] **T5.1 ordinary write/create/unlink/rename 与 `FAT_IOCTL_DISABLE_WRITE` 并发：等待已有 writer，返回后新写入 `-EROFS`。**
-- [x] **T5.2 App 保持运行时执行 disable-write：GCP 实测 App PID 保持 `active(running)`，读取持续成功，普通 write 返回 `-EROFS`；disable 返回后 6 秒及完整 seal/copy 期间 active protected region `block_rq_issue` 写请求均为 0，下一次 boot A/B verify 同 digest。**
+- [x] **T5.2 App 保持运行时执行 disable-write：实测 App PID 保持 `active(running)`，读取持续成功，普通 write 返回 `-EROFS`；disable 返回后 6 秒及完整 seal/copy 期间 active protected region `block_rq_issue` 写请求均为 0，下一次 boot A/B verify 同 digest。**
 - [ ] **T5.3 [暂缓] open → unlink → disable-write → last close 的 eviction 边界测试。**
 - [ ] **T5.4 [暂缓] `FALLOC_FL_KEEP_SIZE` EOF blocks → disable-write → eviction 边界测试。**
 - [ ] **T5.5 FITRIM gate 回归：disable-write 前并发 FITRIM 会被 drain；disable-write 返回后新 FITRIM 返回 `-EROFS`。**
@@ -158,7 +158,7 @@ GCP 直接在测试机上把这两个路径映射到现有 1 GiB `app_param/app_
 
 - [x] **T6.1 active=A：`hb_powerctl_demo --prepare-only` 在 SubState=exited 后执行 disable-write → seal A → A→B，peer 独立 verify PASS。**
 - [x] **T6.2 active=B：`hb_powerctl_demo --prepare-only` 实测解析 `active=/dev/mmcblk0p27 peer=/dev/mmcblk0p26`，执行 disable-write → seal B → B→A，prepare PASS。**
-- [x] **T6.3 Recovery 正在执行时启动 demo：GCP 实测 mount `SubState=running` 时 demo 持续输出 `POWERCTL_WAIT` 且不开始 hash/copy；进入 `exited` 后才输出 `POWERCTL_MOUNT_READY` 并执行 freeze/copy。**
+- [x] **T6.3 Recovery 正在执行时启动 demo：实测 mount `SubState=running` 时 demo 持续输出 `POWERCTL_WAIT` 且不开始 hash/copy；进入 `exited` 后才输出 `POWERCTL_MOUNT_READY` 并执行 freeze/copy。**
 - [ ] **T6.4 suspend 在正式工程仍直接走原 powerctl suspend 路径，不进入新增 prepare。**
 - [ ] **T6.5 demo 默认模式验证 prepare 失败不改变“原 power transition continues”的控制流语义；正式工程保持原 systemd D-Bus 调用不变。**
 
@@ -167,12 +167,19 @@ GCP 直接在测试机上把这两个路径映射到现有 1 GiB `app_param/app_
 - [x] **T7.1 连续 reboot 多轮：已完成多轮 boot verify → App write → power prepare → reboot；正常 prepare 后 next boot A/B 均 verify PASS、digest 相同、直接 mount A 且不触发 Recovery。期间额外一次未 prepare 的直接 reboot 也由启动 Recovery 自动收敛 peer。**
 - [x] **T7.2 交替制造 A invalid / B invalid：A invalid/B valid 时 mount B 并 B→A Recovery；B invalid/A valid 时 mount A 并 A→B Recovery；两方向 post-copy verify 均 PASS。**
 
+### T8. 模块接口收口
+
+- [x] **T8.1 footer descriptor 接口收口：`read_descriptor(fd, digest)` / `write_descriptor(fd, digest)` 自行获取设备大小并计算 protected size；seal 只更新末尾 128 B descriptor，不再覆盖整个 4 KiB footer。块设备实测 footer 前 3968 B 在 seal 前后保持完全一致。**
+- [x] **T8.2 storage 去除 descriptor 二进制解析、测试 chunk 参数、重复 source open 和仅供 Recovery 使用的公共 API；common 统一提供 fd size、完整 pread/pwrite 与小端编解码。**
+- [x] **T8.3 `app_param_test` 统一替代旧 loop 测试程序：sync/no-sync 两种常驻模式均按 1 秒周期统计调用成功/失败，预期错误不退出；Recovery、release、freeze 行为均通过。**
+
+
 ## 后续优化，不阻塞初版
 
 - [ ] generation/version/split-brain 仲裁。
-- [ ] 产品 ABI 中若实际出现 `RWF_SYNC/RWF_DSYNC`，再决定 `pwritev2/pwritev64v2` wrapper；当前实际工程只有 `pwritev64v2` 且无对应 RWF UAPI 使用。
+- [x] 产品 glibc 已确认同时导出 `pwritev2@@GLIBC_2.26` / `pwritev64v2@@GLIBC_2.26`，cachemydata 已同时覆盖两个 ABI 名称，并仅拒绝 `RWF_SYNC/RWF_DSYNC`。
 - [ ] `open64/openat64/fcntl64` 等额外 ABI alias，仅在正式产品二进制确认存在实际引用后补。
 - [ ] `vm.dirty_bytes/dirty_background_bytes` 与 ratio 模式的完整产品化保存/恢复。
-- [ ] Direct I/O alignment 从当前 GCP/J6M 已知布局推广到其他逻辑块大小设备。
+- [ ] Direct I/O alignment 从当前已知布局推广到其他逻辑块大小设备。
 - [ ] J6P manifest 和其他产品变体集成。
 - [ ] 正式 image build pipeline 的 footer 自动 seal/verify 与 customer patch 测试脚手架清理。
