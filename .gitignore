@@ -1,0 +1,12 @@
+# Local FAT module build and generated files.
+/out/
+/power-ctl/src/fat/Makefile
+/power-ctl/src/fat/*.o
+/power-ctl/src/fat/*.ko
+/power-ctl/src/fat/*.mod
+/power-ctl/src/fat/*.mod.c
+/power-ctl/src/fat/*.cmd
+/power-ctl/src/fat/*.d
+/power-ctl/src/fat/Module.symvers
+/power-ctl/src/fat/modules.order
+/power-ctl/src/fat/.tmp_versions/

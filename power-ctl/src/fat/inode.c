@@ -19,6 +19,7 @@
 #include <linux/parser.h>
 #include <linux/uio.h>
 #include <linux/blkdev.h>
+#include <linux/capability.h>
 #include <linux/backing-dev.h>
 #include <asm/unaligned.h>
 #include <linux/random.h>
@@ -223,6 +224,26 @@ static void fat_write_failed(struct address_space *mapping, loff_t to)
 		truncate_pagecache(inode, inode->i_size);
 		fat_truncate_blocks(inode, inode->i_size);
 	}
+}
+
+long fat_disable_write(struct file *file)
+{
+	struct super_block *sb = file_inode(file)->i_sb;
+	struct msdos_sb_info *sbi = MSDOS_SB(sb);
+	long ret;
+
+	if (!capable(CAP_SYS_ADMIN))
+		return -EPERM;
+	if (!is_fat32(sbi) || !sbi->options.isvfat)
+		return -EOPNOTSUPP;
+
+	WRITE_ONCE(sbi->writable, false);
+	down_write(&sb->s_umount);
+	ret = sync_filesystem(sb);
+	if (!ret)
+		ret = blkdev_issue_flush(sb->s_bdev);
+	up_write(&sb->s_umount);
+	return ret;
 }
 
 static int fat_write_begin(struct file *file, struct address_space *mapping,
@@ -653,11 +674,13 @@ static void fat_free_eofblocks(struct inode *inode)
 static void fat_evict_inode(struct inode *inode)
 {
 	truncate_inode_pages_final(&inode->i_data);
-	if (!inode->i_nlink) {
-		inode->i_size = 0;
-		fat_truncate_blocks(inode, 0);
-	} else
-		fat_free_eofblocks(inode);
+	if (fat_writable(inode->i_sb)) {
+		if (!inode->i_nlink) {
+			inode->i_size = 0;
+			fat_truncate_blocks(inode, 0);
+		} else
+			fat_free_eofblocks(inode);
+	}
 
 	invalidate_inode_buffers(inode);
 	clear_inode(inode);
@@ -672,6 +695,7 @@ static void fat_set_state(struct super_block *sb,
 	struct fat_boot_sector *b;
 	struct msdos_sb_info *sbi = MSDOS_SB(sb);
 
+	return;
 	/* do not change any thing if mounted read only */
 	if (sb_rdonly(sb) && !force)
 		return;
@@ -1637,6 +1661,7 @@ int fat_fill_super(struct super_block *sb, void *data, int silent, int isvfat,
 	 */
 	sb->s_time_gran = 1;
 	mutex_init(&sbi->nfs_build_inode_lock);
+	sbi->writable = true;
 	ratelimit_state_init(&sbi->ratelimit, DEFAULT_RATELIMIT_INTERVAL,
 			     DEFAULT_RATELIMIT_BURST);
 

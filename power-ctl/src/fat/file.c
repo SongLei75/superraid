@@ -16,10 +16,57 @@
 #include <linux/fsnotify.h>
 #include <linux/security.h>
 #include <linux/falloc.h>
+#include <linux/mm.h>
 #include "fat.h"
 
 static long fat_fallocate(struct file *file, int mode,
 			  loff_t offset, loff_t len);
+
+static ssize_t fat_file_write_iter(struct kiocb *iocb,
+				   struct iov_iter *from)
+{
+	if (!fat_writable(file_inode(iocb->ki_filp)->i_sb))
+		return -EROFS;
+	return generic_file_write_iter(iocb, from);
+}
+
+static vm_fault_t fat_page_mkwrite(struct vm_fault *vmf)
+{
+	struct file *file = vmf->vma->vm_file;
+
+	if (!fat_writable(file_inode(file)->i_sb))
+		return VM_FAULT_SIGBUS;
+	return filemap_page_mkwrite(vmf);
+}
+
+static const struct vm_operations_struct fat_file_vm_ops = {
+	.fault = filemap_fault,
+	.map_pages = filemap_map_pages,
+	.page_mkwrite = fat_page_mkwrite,
+};
+
+static int fat_file_mmap(struct file *file, struct vm_area_struct *vma)
+{
+	int ret;
+
+	if ((vma->vm_flags & (VM_SHARED | VM_WRITE)) ==
+	    (VM_SHARED | VM_WRITE) && !fat_writable(file_inode(file)->i_sb))
+		return -EROFS;
+
+	ret = generic_file_mmap(file, vma);
+	if (!ret)
+		vma->vm_ops = &fat_file_vm_ops;
+	return ret;
+}
+
+static ssize_t fat_file_splice_write(struct pipe_inode_info *pipe,
+				     struct file *out, loff_t *ppos,
+				     size_t len, unsigned int flags)
+{
+	if (!fat_writable(file_inode(out)->i_sb))
+		return -EROFS;
+	return iter_file_splice_write(pipe, out, ppos, len, flags);
+}
 
 static int fat_ioctl_get_attributes(struct inode *inode, u32 __user *user_attr)
 {
@@ -40,6 +87,9 @@ static int fat_ioctl_set_attributes(struct file *file, u32 __user *user_attr)
 	u32 attr, oldattr;
 	struct iattr ia;
 	int err;
+
+	if (!fat_writable(inode->i_sb))
+		return -EROFS;
 
 	err = get_user(attr, user_attr);
 	if (err)
@@ -130,6 +180,8 @@ static int fat_ioctl_fitrim(struct inode *inode, unsigned long arg)
 	struct fstrim_range range;
 	int err;
 
+	if (!fat_writable(sb))
+		return -EROFS;
 	if (!capable(CAP_SYS_ADMIN))
 		return -EPERM;
 
@@ -159,6 +211,8 @@ long fat_generic_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	u32 __user *user_attr = (u32 __user *)arg;
 
 	switch (cmd) {
+	case FAT_IOCTL_DISABLE_WRITE:
+		return fat_disable_write(filp);
 	case FAT_IOCTL_GET_ATTRIBUTES:
 		return fat_ioctl_get_attributes(inode, user_attr);
 	case FAT_IOCTL_SET_ATTRIBUTES:
@@ -174,7 +228,7 @@ long fat_generic_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 
 static int fat_file_release(struct inode *inode, struct file *filp)
 {
-	if ((filp->f_mode & FMODE_WRITE) &&
+	if ((filp->f_mode & FMODE_WRITE) && fat_writable(inode->i_sb) &&
 	    MSDOS_SB(inode->i_sb)->options.flush) {
 		fat_flush_inodes(inode->i_sb, inode, NULL);
 		set_current_state(TASK_UNINTERRUPTIBLE);
@@ -199,18 +253,17 @@ int fat_file_fsync(struct file *filp, loff_t start, loff_t end, int datasync)
 	return blkdev_issue_flush(inode->i_sb->s_bdev);
 }
 
-
 const struct file_operations fat_file_operations = {
 	.llseek		= generic_file_llseek,
 	.read_iter	= generic_file_read_iter,
-	.write_iter	= generic_file_write_iter,
-	.mmap		= generic_file_mmap,
+	.write_iter	= fat_file_write_iter,
+	.mmap		= fat_file_mmap,
 	.release	= fat_file_release,
 	.unlocked_ioctl	= fat_generic_ioctl,
 	.compat_ioctl	= compat_ptr_ioctl,
 	.fsync		= fat_file_fsync,
 	.splice_read	= generic_file_splice_read,
-	.splice_write	= iter_file_splice_write,
+	.splice_write	= fat_file_splice_write,
 	.fallocate	= fat_fallocate,
 };
 
@@ -267,6 +320,9 @@ static long fat_fallocate(struct file *file, int mode,
 	struct super_block *sb = inode->i_sb;
 	struct msdos_sb_info *sbi = MSDOS_SB(sb);
 	int err = 0;
+
+	if (!fat_writable(sb))
+		return -EROFS;
 
 	/* No support for hole punch or other fallocate flags. */
 	if (mode & ~FALLOC_FL_KEEP_SIZE)
@@ -484,6 +540,9 @@ int fat_setattr(struct user_namespace *mnt_userns, struct dentry *dentry,
 	struct inode *inode = d_inode(dentry);
 	unsigned int ia_valid;
 	int error;
+
+	if (!fat_writable(dentry->d_sb))
+		return -EROFS;
 
 	/* Check for setting the inode time. */
 	ia_valid = attr->ia_valid;

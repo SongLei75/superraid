@@ -342,6 +342,9 @@ int fat_update_time(struct inode *inode, struct timespec64 *now, int flags)
 {
 	int dirty_flags = 0;
 
+	if (!fat_writable(inode->i_sb))
+		return -EROFS;
+
 	if (inode->i_ino == MSDOS_ROOT_INO)
 		return 0;
 

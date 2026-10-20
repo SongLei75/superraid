@@ -765,6 +765,9 @@ static int vfat_create(struct user_namespace *mnt_userns, struct inode *dir,
 	struct timespec64 ts;
 	int err;
 
+	if (!fat_writable(sb))
+		return -EROFS;
+
 	mutex_lock(&MSDOS_SB(sb)->s_lock);
 
 	ts = current_time(dir);
@@ -793,6 +796,9 @@ static int vfat_rmdir(struct inode *dir, struct dentry *dentry)
 	struct super_block *sb = dir->i_sb;
 	struct fat_slot_info sinfo;
 	int err;
+
+	if (!fat_writable(sb))
+		return -EROFS;
 
 	mutex_lock(&MSDOS_SB(sb)->s_lock);
 
@@ -825,6 +831,9 @@ static int vfat_unlink(struct inode *dir, struct dentry *dentry)
 	struct fat_slot_info sinfo;
 	int err;
 
+	if (!fat_writable(sb))
+		return -EROFS;
+
 	mutex_lock(&MSDOS_SB(sb)->s_lock);
 
 	err = vfat_find(dir, &dentry->d_name, &sinfo);
@@ -852,6 +861,9 @@ static int vfat_mkdir(struct user_namespace *mnt_userns, struct inode *dir,
 	struct fat_slot_info sinfo;
 	struct timespec64 ts;
 	int err, cluster;
+
+	if (!fat_writable(sb))
+		return -EROFS;
 
 	mutex_lock(&MSDOS_SB(sb)->s_lock);
 
@@ -1162,13 +1174,14 @@ static int vfat_rename2(struct user_namespace *mnt_userns, struct inode *old_dir
 			struct dentry *old_dentry, struct inode *new_dir,
 			struct dentry *new_dentry, unsigned int flags)
 {
+	if (!fat_writable(old_dir->i_sb))
+		return -EROFS;
 	if (flags & ~(RENAME_NOREPLACE | RENAME_EXCHANGE))
 		return -EINVAL;
 
-	if (flags & RENAME_EXCHANGE) {
+	if (flags & RENAME_EXCHANGE)
 		return vfat_rename_exchange(old_dir, old_dentry,
 					    new_dir, new_dentry);
-	}
 
 	/* VFS already handled RENAME_NOREPLACE, handle it as a normal rename */
 	return vfat_rename(old_dir, old_dentry, new_dir, new_dentry);
