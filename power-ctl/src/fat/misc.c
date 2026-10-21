@@ -74,7 +74,7 @@ int fat_clusters_flush(struct super_block *sb)
 	if (!is_fat32(sbi))
 		return 0;
 
-	bh = sb_bread(sb, sbi->fsinfo_sector);
+	bh = fat_cache_bread(sb, sbi->fsinfo_sector);
 	if (bh == NULL) {
 		fat_msg(sb, KERN_ERR, "bread failed in fat_clusters_flush");
 		return -EIO;
@@ -93,7 +93,7 @@ int fat_clusters_flush(struct super_block *sb)
 			fsinfo->free_clusters = cpu_to_le32(sbi->free_clusters);
 		if (sbi->prev_free != -1)
 			fsinfo->next_cluster = cpu_to_le32(sbi->prev_free);
-		mark_buffer_dirty(bh);
+		fat_cache_mark_dirty(sb, bh, NULL);
 	}
 	brelse(bh);
 
@@ -364,9 +364,12 @@ int fat_update_time(struct inode *inode, struct timespec64 *now, int flags)
 }
 EXPORT_SYMBOL_GPL(fat_update_time);
 
-int fat_sync_bhs(struct buffer_head **bhs, int nr_bhs)
+int fat_sync_bhs(struct super_block *sb, struct buffer_head **bhs, int nr_bhs)
 {
 	int i, err = 0;
+
+	if (fat_write_cache_active(sb))
+		return 0;
 
 	for (i = 0; i < nr_bhs; i++)
 		write_dirty_buffer(bhs[i], 0);

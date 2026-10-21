@@ -924,9 +924,9 @@ static int vfat_update_dotdot_de(struct inode *dir, struct inode *inode,
 				 struct msdos_dir_entry *dotdot_de)
 {
 	fat_set_start(dotdot_de, MSDOS_I(dir)->i_logstart);
-	mark_buffer_dirty_inode(dotdot_bh, inode);
+	fat_cache_mark_dirty(inode->i_sb, dotdot_bh, inode);
 	if (IS_DIRSYNC(dir))
-		return sync_dirty_buffer(dotdot_bh);
+		return fat_cache_sync_buffer(inode->i_sb, dotdot_bh);
 	return 0;
 }
 

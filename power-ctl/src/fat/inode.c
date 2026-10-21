@@ -192,27 +192,118 @@ static int fat_get_block(struct inode *inode, sector_t iblock,
 	if (err)
 		return err;
 	bh_result->b_size = max_blocks << sb->s_blocksize_bits;
+	if (fat_write_cache_active(sb)) {
+		bh_result->b_size = sb->s_blocksize;
+		return fat_cache_prepare_block(sb, bh_result, create);
+	}
 	return 0;
 }
 
 static int fat_writepage(struct page *page, struct writeback_control *wbc)
 {
-	return block_write_full_page(page, fat_get_block, wbc);
+	struct inode *inode = page->mapping->host;
+	struct super_block *sb = inode->i_sb;
+	struct buffer_head *bh, *head;
+	loff_t size = i_size_read(inode);
+	sector_t block = (sector_t)page->index << (PAGE_SHIFT - inode->i_blkbits);
+	unsigned int offset = 0;
+	int err = 0;
+
+	if (!fat_write_cache_active(sb))
+		return block_write_full_page(page, fat_get_block, wbc);
+	if (!page_has_buffers(page))
+		create_empty_buffers(page, sb->s_blocksize,
+				     (1 << BH_Dirty) | (1 << BH_Uptodate));
+	if (page_offset(page) < size && size - page_offset(page) < PAGE_SIZE)
+		zero_user_segment(page, size - page_offset(page), PAGE_SIZE);
+	head = bh = page_buffers(page);
+	set_page_writeback(page);
+	do {
+		if (buffer_dirty(bh) && page_offset(page) + offset < size &&
+		    fat_writable(sb)) {
+			if (!buffer_mapped(bh))
+				err = fat_get_block(inode, block, bh, 1);
+			if (!err)
+				err = fat_cache_write_block(sb, bh->b_blocknr, page, offset);
+			if (err)
+				break;
+		}
+		clear_buffer_dirty(bh);
+		offset += sb->s_blocksize;
+		block++;
+		bh = bh->b_this_page;
+	} while (bh != head);
+	if (err) {
+		redirty_page_for_writepage(wbc, page);
+		mapping_set_error(page->mapping, err);
+	}
+	end_page_writeback(page);
+	unlock_page(page);
+	return err;
+}
+
+static int fat_cache_writepage(struct page *page, struct writeback_control *wbc,
+			       void *data)
+{
+	return fat_writepage(page, wbc);
 }
 
 static int fat_writepages(struct address_space *mapping,
 			  struct writeback_control *wbc)
 {
+	if (fat_write_cache_active(mapping->host->i_sb))
+		return write_cache_pages(mapping, wbc, fat_cache_writepage, NULL);
 	return mpage_writepages(mapping, wbc, fat_get_block);
+}
+
+/* Called with the file page locked, before accepting buffered/mmap changes. */
+int fat_cache_prepare_page(struct page *page)
+{
+	struct inode *inode = page->mapping->host;
+	struct super_block *sb = inode->i_sb;
+	struct buffer_head *bh, *head;
+	sector_t block = (sector_t)page->index << (PAGE_SHIFT - inode->i_blkbits);
+	unsigned int offset = 0;
+	int err;
+
+	if (!fat_write_cache_active(sb))
+		return 0;
+	if (!page_has_buffers(page))
+		create_empty_buffers(page, sb->s_blocksize,
+				     PageUptodate(page) ? (1 << BH_Uptodate) : 0);
+	head = bh = page_buffers(page);
+	do {
+		if (!buffer_mapped(bh) && page_offset(page) + offset < i_size_read(inode)) {
+			err = fat_get_block(inode, block, bh, 0);
+			if (err)
+				return err;
+		}
+		err = fat_cache_prepare_block(sb, bh, true);
+		if (err)
+			return err;
+		offset += sb->s_blocksize;
+		block++;
+		bh = bh->b_this_page;
+	} while (bh != head);
+	return 0;
 }
 
 static int fat_read_folio(struct file *file, struct folio *folio)
 {
+	if (fat_write_cache_active(folio->mapping->host->i_sb))
+		return block_read_full_folio(folio, fat_get_block);
 	return mpage_read_folio(folio, fat_get_block);
 }
 
 static void fat_readahead(struct readahead_control *rac)
 {
+	if (fat_write_cache_active(rac->mapping->host->i_sb)) {
+		struct folio *folio;
+
+		while ((folio = readahead_folio(rac)))
+			block_read_full_folio(folio, fat_get_block);
+		return;
+	}
 	mpage_readahead(rac, fat_get_block);
 }
 
@@ -238,6 +329,8 @@ long fat_disable_write(struct file *file)
 		return -EOPNOTSUPP;
 
 	WRITE_ONCE(sbi->writable, false);
+	if (fat_write_cache_stop(sb))
+		return 0;
 	down_write(&sb->s_umount);
 	ret = sync_filesystem(sb);
 	if (!ret)
@@ -256,6 +349,14 @@ static int fat_write_begin(struct file *file, struct address_space *mapping,
 	err = cont_write_begin(file, mapping, pos, len,
 				pagep, fsdata, fat_get_block,
 				&MSDOS_I(mapping->host)->mmu_private);
+	if (!err) {
+		err = fat_cache_prepare_page(*pagep);
+		if (err) {
+			unlock_page(*pagep);
+			put_page(*pagep);
+			*pagep = NULL;
+		}
+	}
 	if (err < 0)
 		fat_write_failed(mapping, pos + len);
 	return err;
@@ -286,6 +387,9 @@ static ssize_t fat_direct_IO(struct kiocb *iocb, struct iov_iter *iter)
 	size_t count = iov_iter_count(iter);
 	loff_t offset = iocb->ki_pos;
 	ssize_t ret;
+
+	if (fat_write_cache_active(inode->i_sb))
+		return 0; /* Both direct reads and writes use the coherent page cache. */
 
 	if (iov_iter_rw(iter) == WRITE) {
 		/*
@@ -710,7 +814,7 @@ static void fat_set_state(struct super_block *sb,
 		return;
 	}
 
-	bh = sb_bread(sb, 0);
+	bh = fat_cache_bread(sb, 0);
 	if (bh == NULL) {
 		fat_msg(sb, KERN_ERR, "unable to read boot sector "
 			"to mark fs as dirty");
@@ -731,8 +835,8 @@ static void fat_set_state(struct super_block *sb,
 			b->fat16.state &= ~FAT_STATE_DIRTY;
 	}
 
-	mark_buffer_dirty(bh);
-	sync_dirty_buffer(bh);
+	fat_cache_mark_dirty(sb, bh, NULL);
+	fat_cache_sync_buffer(sb, bh);
 	brelse(bh);
 }
 
@@ -763,6 +867,7 @@ static void fat_put_super(struct super_block *sb)
 	iput(sbi->fsinfo_inode);
 	iput(sbi->fat_inode);
 
+	fat_write_cache_destroy(sb);
 	call_rcu(&sbi->rcu, delayed_free);
 }
 
@@ -891,7 +996,7 @@ retry:
 		return 0;
 
 	fat_get_blknr_offset(sbi, i_pos, &blocknr, &offset);
-	bh = sb_bread(sb, blocknr);
+	bh = fat_cache_bread(sb, blocknr);
 	if (!bh) {
 		fat_msg(sb, KERN_ERR, "unable to read inode block "
 		       "for updating (i_pos %lld)", i_pos);
@@ -921,10 +1026,10 @@ retry:
 				  &raw_entry->cdate, &raw_entry->ctime_cs);
 	}
 	spin_unlock(&sbi->inode_hash_lock);
-	mark_buffer_dirty(bh);
+	fat_cache_mark_dirty(sb, bh, NULL);
 	err = 0;
 	if (wait)
-		err = sync_dirty_buffer(bh);
+		err = fat_cache_sync_buffer(sb, bh);
 	brelse(bh);
 	return err;
 }
@@ -1650,6 +1755,7 @@ int fat_fill_super(struct super_block *sb, void *data, int silent, int isvfat,
 	if (!sbi)
 		return -ENOMEM;
 	sb->s_fs_info = sbi;
+	fat_write_cache_init(sb);
 
 	sb->s_flags |= SB_NODIRATIME;
 	sb->s_magic = MSDOS_SUPER_MAGIC;
@@ -1673,7 +1779,7 @@ int fat_fill_super(struct super_block *sb, void *data, int silent, int isvfat,
 
 	error = -EIO;
 	sb_min_blocksize(sb, 512);
-	bh = sb_bread(sb, 0);
+	bh = fat_cache_bread(sb, 0);
 	if (bh == NULL) {
 		fat_msg(sb, KERN_ERR, "unable to read boot sector");
 		goto out_fail;
@@ -1711,7 +1817,7 @@ int fat_fill_super(struct super_block *sb, void *data, int silent, int isvfat,
 		}
 
 		/* Verify that the larger boot sector is fully readable */
-		bh_resize = sb_bread(sb, 0);
+		bh_resize = fat_cache_bread(sb, 0);
 		if (bh_resize == NULL) {
 			fat_msg(sb, KERN_ERR, "unable to read boot sector"
 			       " (logical sector size = %lu)",
@@ -1754,7 +1860,7 @@ int fat_fill_super(struct super_block *sb, void *data, int silent, int isvfat,
 		if (sbi->fsinfo_sector == 0)
 			sbi->fsinfo_sector = 1;
 
-		fsinfo_bh = sb_bread(sb, sbi->fsinfo_sector);
+		fsinfo_bh = fat_cache_bread(sb, sbi->fsinfo_sector);
 		if (fsinfo_bh == NULL) {
 			fat_msg(sb, KERN_ERR, "bread failed, FSINFO block"
 			       " (sector = %lu)", sbi->fsinfo_sector);
@@ -1918,6 +2024,7 @@ out_fail:
 	unload_nls(sbi->nls_io);
 	unload_nls(sbi->nls_disk);
 	fat_reset_iocharset(&sbi->options);
+	fat_write_cache_destroy(sb);
 	sb->s_fs_info = NULL;
 	kfree(sbi);
 	return error;

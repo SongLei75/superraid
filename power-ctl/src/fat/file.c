@@ -36,7 +36,15 @@ static vm_fault_t fat_page_mkwrite(struct vm_fault *vmf)
 
 	if (!fat_writable(file_inode(file)->i_sb))
 		return VM_FAULT_SIGBUS;
-	return filemap_page_mkwrite(vmf);
+	{
+		vm_fault_t ret = filemap_page_mkwrite(vmf);
+
+		if ((ret & VM_FAULT_LOCKED) && fat_cache_prepare_page(vmf->page)) {
+			unlock_page(vmf->page);
+			return VM_FAULT_OOM;
+		}
+		return ret;
+	}
 }
 
 static const struct vm_operations_struct fat_file_vm_ops = {
@@ -185,6 +193,8 @@ static int fat_ioctl_fitrim(struct inode *inode, unsigned long arg)
 	if (!capable(CAP_SYS_ADMIN))
 		return -EPERM;
 
+	if (fat_write_cache_active(sb))
+		return -EBUSY;
 	if (!bdev_max_discard_sectors(sb->s_bdev))
 		return -EOPNOTSUPP;
 
@@ -211,6 +221,10 @@ long fat_generic_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	u32 __user *user_attr = (u32 __user *)arg;
 
 	switch (cmd) {
+	case FAT_IOCTL_CACHE_ENABLE:
+		return fat_write_cache_ioctl(filp, true);
+	case FAT_IOCTL_CACHE_DISABLE:
+		return fat_write_cache_ioctl(filp, false);
 	case FAT_IOCTL_DISABLE_WRITE:
 		return fat_disable_write(filp);
 	case FAT_IOCTL_GET_ATTRIBUTES:
@@ -250,6 +264,8 @@ int fat_file_fsync(struct file *filp, loff_t start, loff_t end, int datasync)
 	if (err)
 		return err;
 
+	if (fat_write_cache_active(inode->i_sb))
+		return 0;
 	return blkdev_issue_flush(inode->i_sb->s_bdev);
 }
 

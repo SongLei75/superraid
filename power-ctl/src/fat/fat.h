@@ -7,6 +7,7 @@
 #include <linux/hash.h>
 #include <linux/ratelimit.h>
 #include <linux/msdos_fs.h>
+#include "write_cache.h"
 
 /*
  * vfat shortname flags
@@ -25,6 +26,8 @@
 #define FAT_NFS_NOSTALE_RO	2      /* NFS RO support, no ESTALE issue */
 
 #define FAT_IOCTL_DISABLE_WRITE	_IO('r', 0x14)
+#define FAT_IOCTL_CACHE_ENABLE	_IO('r', 0x15)
+#define FAT_IOCTL_CACHE_DISABLE	_IO('r', 0x16)
 
 struct fat_mount_options {
 	kuid_t fs_uid;
@@ -79,6 +82,7 @@ struct msdos_sb_info {
 	struct mutex nfs_build_inode_lock;
 	struct mutex s_lock;
 	bool writable;
+	struct fat_write_cache write_cache;
 	unsigned int prev_free;      /* previously allocated cluster number */
 	unsigned int free_clusters;  /* -1 if undefined */
 	unsigned int free_clus_valid; /* is free_clusters valid? */
@@ -471,7 +475,7 @@ extern int fat_truncate_time(struct inode *inode, struct timespec64 *now,
 			     int flags);
 extern int fat_update_time(struct inode *inode, struct timespec64 *now,
 			   int flags);
-extern int fat_sync_bhs(struct buffer_head **bhs, int nr_bhs);
+extern int fat_sync_bhs(struct super_block *sb, struct buffer_head **bhs, int nr_bhs);
 
 int fat_cache_init(void);
 void fat_cache_destroy(void);
