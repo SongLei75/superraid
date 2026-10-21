@@ -1,3 +1,21 @@
+# SuperRAID
+
+**A/B partition integrity and recovery for embedded Linux**
+
+SuperRAID is an experimental, independently maintained project exploring data consistency and recovery for embedded Linux systems. It combines integrity-checked A/B partitions, startup recovery, and controlled FAT/VFAT filesystem writes during shutdown and reboot.
+
+## Project status
+
+**Active development; not production-ready.** The repository contains a standalone implementation under [`power-ctl/`](power-ctl/) and technical design notes below. Integration tests have covered A/B partition selection, bidirectional recovery, FAT write blocking, and reboot scenarios. Known edge cases and outstanding tests are tracked in [`TODO.md`](TODO.md).
+
+## Maintenance and roadmap
+
+Maintained by [@SongLei75](https://github.com/SongLei75). Planned work includes completing failure-injection and concurrency tests, reviewing remaining filesystem edge cases, improving reproducible validation, and publishing stable revisions when they are ready.
+
+Issues and pull requests are welcome. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for contribution guidance.
+
+---
+
 # SuperRAID A/B 校验、启动恢复与正常下电备份方案
 
 本文描述 `app_param` A/B 分区的完整目标方案。当前已实现代码基线保存在本目录 `patch/`：
