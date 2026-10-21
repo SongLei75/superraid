@@ -14,6 +14,10 @@ Maintained by [@SongLei75](https://github.com/SongLei75). Planned work includes 
 
 Issues and pull requests are welcome. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for contribution guidance.
 
+## License
+
+SuperRAID's original project code is licensed under the **GNU General Public License, version 2 only (GPL-2.0-only)**. See [LICENSE](LICENSE). Linux-derived FAT/VFAT source files retain their existing upstream copyright notices and SPDX license identifiers. Third-party components and materials remain subject to their respective original licenses.
+
 ---
 
 # SuperRAID A/B 校验、启动恢复与正常下电备份方案
